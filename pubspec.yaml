@@ -1,0 +1,133 @@
+name: fe_editor
+description: "火焰之纹章 GBA 改版工具（FE6/FE7/FE8）"
+publish_to: 'none'
+version: 1.8.1+14
+
+environment:
+  sdk: ^3.6.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/patches/FE6/Berserk Unit Battle Animation/
+    - assets/patches/FE6/FEEditor/01command_hack/
+    - assets/patches/FE6/FEEditor/48command_hack/
+    - assets/patches/FE6/FEEditor/Anti-Huffman/
+    - assets/patches/FE6/FEEditor/MeleeAndMagicFix/
+    - assets/patches/FE6/autosave_killer/
+    - assets/patches/FE7J/01command_hack/
+    - assets/patches/FE7J/16_tracks_12_sounds_patch/
+    - assets/patches/FE7J/48command_hack/
+    - assets/patches/FE7J/Anti-Huffman/
+    - assets/patches/FE7J/Berserk Unit Battle Animation/
+    - assets/patches/FE7J/ChangeSupportTalkBGM/
+    - assets/patches/FE7J/FillAIDangerMap20211217/
+    - assets/patches/FE7J/FillAIDangerMap20220710/
+    - assets/patches/FE7J/FillAIDangerMap20220712/
+    - assets/patches/FE7J/MapAddInRange20211219/
+    - assets/patches/FE7J/MeleeAndMagicFix/
+    - assets/patches/FE7J/MeleeAndMagicFix_ItemFix20220721/
+    - assets/patches/FE7J/Status limit break patch  LimitBreak/
+    - assets/patches/FE7J/Tutorial_Disabler/
+    - assets/patches/FE7J/autosave_killer/
+    - assets/patches/FE7J/csa_feditor/
+    - assets/patches/FE7U/16_tracks_12_sounds_patch/
+    - assets/patches/FE7U/Berserk Unit Battle Animation/
+    - assets/patches/FE7U/ChangeSupportTalkBGM/
+    - assets/patches/FE7U/DSFE-style Growth Rates/
+    - assets/patches/FE7U/FEEditor/01command_hack/
+    - assets/patches/FE7U/FEEditor/48command_hack/
+    - assets/patches/FE7U/FEEditor/Anti-Huffman/
+    - assets/patches/FE7U/FEEditor/Magic/
+    - assets/patches/FE7U/FEEditor/MeleeAndMagicFix/
+    - assets/patches/FE7U/FillAIDangerMap20211217/
+    - assets/patches/FE7U/FillAIDangerMap20220712/
+    - assets/patches/FE7U/MapAddInRange20211219/
+    - assets/patches/FE7U/MeleeAndMagicFix_ItemFix20220721/
+    - assets/patches/FE7U/Tutorial_Disabler/
+    - assets/patches/FE7U/Use Item Might for Healing/
+    - assets/patches/FE7U/autosave_killer/
+    - assets/patches/FE7U/freerange/
+    - assets/patches/FE7U/display-all-weapon-ranks-your-character-has/
+    - assets/patches/FE8J/16_tracks_12_sounds_patch/
+    - assets/patches/FE8J/AnimationSwitchG/
+    - assets/patches/FE8J/Anti-Huffman/
+    - assets/patches/FE8J/Battle music change for each chapter/
+    - assets/patches/FE8J/Berserk Unit Battle Animation/
+    - assets/patches/FE8J/Boss Animation ON/
+    - assets/patches/FE8J/CG Fade glitch/
+    - assets/patches/FE8J/ChangeSupportTalkBGM/
+    - assets/patches/FE8J/Command patch/
+    - assets/patches/FE8J/DSFE-style Growth Rates/
+    - assets/patches/FE8J/FE8StatueExceed31/
+    - assets/patches/FE8J/FillAIDangerMap20220710/
+    - assets/patches/FE8J/Fix_DoesThisChapterCount/
+    - assets/patches/FE8J/MapAddInRange20211219/
+    - assets/patches/FE8J/Mixed weapon magic/
+    - assets/patches/FE8J/Mode Coefficient EXP fix/
+    - assets/patches/FE8J/Enemy Control Glitch Fix/
+    - assets/patches/FE8J/FeditorAdv MagicSystem/
+    - assets/patches/FE8J/FillAIDangerMap20211217/
+    - assets/patches/FE8J/FillAIDangerMap20220712/
+    - assets/patches/FE8J/Lose Weapon Ranks on Promo/
+    - assets/patches/FE8J/MeleeAndMagicFix/
+    - assets/patches/FE8J/MeleeAndMagicFix_ItemFix20220721/
+    - assets/patches/FE8J/Mixed weapon magic AND RES/
+    - assets/patches/FE8J/Promotion 3 branch/
+    - assets/patches/FE8J/SkipOpeningWorldmapEvent/
+    - assets/patches/FE8J/Use Item Might for Healing/
+    - assets/patches/FE8J/as_str_mod/
+    - assets/patches/FE8J/autosave_killer/
+    - assets/patches/FE8J/calc_kousoku/
+    - assets/patches/FE8J/fix_lz77decompress/
+    - assets/patches/FE8J/home_base/
+    - assets/patches/FE8J/no_easy_mode/
+    - assets/patches/FE8J/op class reel sort/
+    - assets/patches/FE8U/16_tracks_12_sounds_patch/
+    - assets/patches/FE8U/AnimationSwitchG/
+    - assets/patches/FE8U/Berserk Unit Battle Animation/
+    - assets/patches/FE8U/Boss Animation ON/
+    - assets/patches/FE8U/CG Fade glitch/
+    - assets/patches/FE8U/ChangeSupportTalkBGM/
+    - assets/patches/FE8U/Changing Battle BGM/
+    - assets/patches/FE8U/DSFE-style Growth Rates/
+    - assets/patches/FE8U/FEEditor/01command_hack/
+    - assets/patches/FE8U/FEEditor/48command_hack/
+    - assets/patches/FE8U/FEEditor/Anti-Huffman/
+    - assets/patches/FE8U/FEEditor/Magic/
+    - assets/patches/FE8U/FEEditor/MeleeAndMagicFix/
+    - assets/patches/FE8U/FillAIDangerMap20211217/
+    - assets/patches/FE8U/MapAddInRange20211219/
+    - assets/patches/FE8U/MeleeAndMagicFix_ItemFix20220721/
+    - assets/patches/FE8U/Use Item Might for Healing/
+    - assets/patches/FE8U/Enemy Control Glitch Fix/
+    - assets/patches/FE8U/FillAIDangerMap20220710/
+    - assets/patches/FE8U/FillAIDangerMap20220712/
+    - assets/patches/FE8U/Fix_DoesThisChapterCount/
+    - assets/patches/FE8U/Growth_Mod/
+    - assets/patches/FE8U/Lose Weapon Ranks on Promo/
+    - assets/patches/FE8U/Mode Coefficient EXP fix/
+    - assets/patches/FE8U/Promotion 3 branch/
+    - assets/patches/FE8U/SkipOpeningWorldmapEvent/
+    - assets/patches/FE8U/as_str_mod/
+    - assets/patches/FE8U/calc_kousoku/
+    - assets/patches/FE8U/autosave_killer/
+    - assets/patches/FE8U/fix debuff glitch/
+    - assets/patches/FE8U/freerange/
+    - assets/patches/FE8U/skip hand axe wait for return/
+    - assets/patches/FE8U/home_base/
+    - assets/patches/FE8U/op class reel sort/
+    - assets/patches/FE8U/display-all-weapon-ranks-your-character-has/
+    - assets/patches/FE8U/fix_lz77decompress/
+    - assets/patches/FE8U/no_easy_mode/
+    - assets/patches/FE8U/skill20190708/
+    - assets/tbl/
