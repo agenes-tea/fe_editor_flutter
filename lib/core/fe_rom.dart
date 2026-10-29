@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'fe8_formal_item_class_names.dart';
+import 'fe8_formal_names.dart';
 import 'rom_info.dart';
 import 'rom_profile.dart';
+import 'rom_buffer.dart' show crc32;
 import 'sjis_table.dart';
 import 'gbk_table.dart';
 import 'text_codec.dart';
@@ -25,6 +28,28 @@ class FeRom {
 
   int get length => data.length;
 
+  /// ROM 内容指纹，用于隔离跨 ROM 的缓存。
+  ///
+  /// 取长度 + 头部 + 尾部样本算 CRC32：同一份 ROM 多次打开结果相同，
+  /// 不同 ROM 撞车概率可忽略。
+  late final int fingerprint = _computeFingerprint();
+
+  int _computeFingerprint() {
+    const sample = 4096;
+    final head = data.length <= sample ? data.length : sample;
+    final tail = data.length <= sample * 2 ? 0 : sample;
+    final buf = Uint8List(head + tail + 4);
+    buf[0] = data.length & 0xFF;
+    buf[1] = (data.length >> 8) & 0xFF;
+    buf[2] = (data.length >> 16) & 0xFF;
+    buf[3] = (data.length >> 24) & 0xFF;
+    buf.setRange(4, 4 + head, data);
+    if (tail > 0) {
+      buf.setRange(4 + head, buf.length, data, data.length - tail);
+    }
+    return crc32(buf);
+  }
+
   static bool _isSafeOffset(int v) => v >= 0 && v < 0x02000000;
 
   static int u8(Uint8List d, int a) => (a >= 0 && a < d.length) ? d[a] : 0;
@@ -42,12 +67,19 @@ class FeRom {
   /// GBA 指针（0x08xxxxxx）转文件偏移
   static int toOffset(int ptr) => ptr & 0x1FFFFFF;
 
-  static bool isPointer(int v) => v >= 0x08000000 && v < 0x0A000000;
+  /// 判断是否像 GBA 指针。
+  ///
+  /// 下限固定为 0x08000000，上限**按 ROM 实际长度**判定：
+  /// 改版常打补丁把寻址扩展到 32MB 以外（ROM 做到 20MB+），
+  /// 表内指针形如 0x89xxxxxx，用固定的 0x0A000000 上限会把这些
+  /// 全判成「非指针」，导致文本/单位表读出来全是空（铠甲的呼唤踩过）。
+  static bool isPointer(int v, int romLength) =>
+      v >= 0x08000000 && toOffset(v) < romLength;
 
   /// 读指针槽，返回数据偏移；不合法则返回 -1
   int pointerAt(int slot) {
     final p = u32(data, slot);
-    if (!isPointer(p)) return -1;
+    if (!isPointer(p, length)) return -1;
     final off = toOffset(p);
     return _isSafeOffset(off) ? off : -1;
   }
@@ -121,7 +153,7 @@ class FeRom {
 
     bool ok(int slot) {
       final v = read32(slot);
-      if (!isPointer(v)) return false;
+      if (!isPointer(v, d.length)) return false;
       final off = toOffset(v);
       return off > 0 && off < d.length;
     }
@@ -171,6 +203,16 @@ class FeRom {
 
   bool get textAvailable =>
       _treeBase >= 0 && _treeDataBase >= 0 && _textBase > 0;
+
+  /// 文本指针表的基址（表内第 id 个 4 字节槽指向第 id 条文本）。
+  /// 文本写入要重指指针时用它定位槽位。
+  int get textTableBase => _textBase;
+
+  /// Huffman 树的节点表基址（`mask_pointer`，单次解引用）。
+  int get huffmanTreeBase => _treeBase;
+
+  /// Huffman 树的根节点/数据基址（`mask_point_base_pointer`，双重解引用）。
+  int get huffmanTreeDataBase => _treeDataBase;
 
   /// 取文本 id 对应的 Huffman 压缩数据偏移
   int textEntryOffset(int textId) {
@@ -233,6 +275,11 @@ class FeRom {
       if (addr < 0) return '';
       return GbkCodec.decode(_plainSlice(addr));
     }
+    if (textEncoding == FeTextEncoding.plainUtf8) {
+      final addr = textEntryOffset(textId);
+      if (addr < 0) return '';
+      return Utf8Codec.decode(_plainSlice(addr));
+    }
     // unknown（汉化版 Huffman+码表）：挂了码表就走 Huffman 解码 + tbl 渲染
     if (zhTable != null) {
       final addr = textEntryOffset(textId);
@@ -263,6 +310,9 @@ class FeRom {
     final cleaned = <int>[];
     for (final b in raw) {
       if (b == 0x00 || b == 0x1F) break;
+      // 控制码（换行 / 颜色 / 头像 / 名字占位）不属于字符本身，
+      // 留在字节流里会被 SJIS 解码器当成双字节引导字节，导致后面整串错位。
+      if (b < 0x20) continue;
       cleaned.add(b);
     }
     if (cleaned.isEmpty) return '';
@@ -287,15 +337,28 @@ class FeRom {
 
   FeTextEncoding _detectTextEncoding() {
     if (!textAvailable) return FeTextEncoding.unknown;
-    final huffmanSane = _sampleRatio((raw) => _looksLikeText(raw));
-    if (huffmanSane >= 0.5) return FeTextEncoding.huffmanSjis;
 
-    // Huffman 不成立时，按明文 GBK 抽样判定（汉化版）
-    final gbkSane = _sampleRatio(
-      (raw) => raw.isNotEmpty && GbkCodec.looksLikeGbk(raw),
+    // 先判明文：汉化组/重度改版常把文本表整体搬走并改成明文
+    // （Superxyj 烈火之剑用 GBK，铠甲的呼唤用 UTF-8）。
+    // 必须放在 Huffman 之前判：Huffman 解码器对任意字节都能吐出可打印字符，
+    // 铠甲的呼唤曾因此被误判成 huffmanSjis（0.77），解出来的全是乱码。
+    // UTF-8 与 GBK 的区分靠续接字节区间（0x80~0xBF vs 0x40~0xFE）。
+    final plain = _sampleRatio(
+      (raw) =>
+          raw.isNotEmpty &&
+          (Utf8Codec.looksLikeUtf8(raw) || GbkCodec.looksLikeGbk(raw)),
       plain: true,
     );
-    if (gbkSane >= 0.5) return FeTextEncoding.plainGbk;
+    if (plain >= 0.5) {
+      final utf8 = _sampleRatio(
+        (raw) => raw.isNotEmpty && Utf8Codec.looksLikeUtf8(raw),
+        plain: true,
+      );
+      return utf8 >= 0.5 ? FeTextEncoding.plainUtf8 : FeTextEncoding.plainGbk;
+    }
+
+    final huffmanSane = _sampleRatio((raw) => _looksLikeText(raw));
+    if (huffmanSane >= 0.5) return FeTextEncoding.huffmanSjis;
 
     return FeTextEncoding.unknown;
   }
@@ -327,7 +390,8 @@ class FeRom {
       : 0;
 
   /// 抽样 60 条文本，返回「看起来正常」的比例。
-  double _sampleRatio(bool Function(Uint8List raw) check, {bool plain = false}) {
+  double _sampleRatio(bool Function(Uint8List raw) check,
+      {bool plain = false}) {
     var checked = 0;
     var sane = 0;
     for (var id = 0; id < 0x2000 && checked < 60; id++) {
@@ -346,6 +410,10 @@ class FeRom {
   ///
   /// 乱码里会掺入孤立字节与不可打印控制码，用「整条高占比」而
   /// 不是「有几个合法字符」来区分，否则改版乱码也会误判为正常。
+  ///
+  /// **控制码（< 0x20）必须跳过、不能算作坏字节**：FE 的文本里普遍夹着
+  /// 换行/颜色/头像等控制码（如 `0C 10 50 01`），封印之剑日版正文完全正常，
+  /// 但把这些控制码当坏字节时健康率只有 0.23，会整片判成「未识别」。
   bool _looksLikeText(Uint8List raw) {
     if (raw.isEmpty) return false;
     var units = 0;
@@ -354,6 +422,11 @@ class FeRom {
     while (i < raw.length && units < 48) {
       final b = raw[i];
       if (b == 0x00 || b == 0x1F) break;
+      if (b < 0x20) {
+        // 控制码（换行 / 颜色 / 头像 / 名字占位等）：跳过，不计入也不是坏字节。
+        i++;
+        continue;
+      }
       units++;
       if (b >= 0x20 && b < 0x7F) {
         i++;
@@ -405,11 +478,18 @@ class FeRom {
   Uint8List decodeTextBytesAt(int textId) {
     final addr = textEntryOffset(textId);
     if (addr < 0) return Uint8List(0);
-    if (textEncoding == FeTextEncoding.plainGbk) {
+    if (textEncoding == FeTextEncoding.plainGbk ||
+        textEncoding == FeTextEncoding.plainUtf8) {
       return _plainSlice(addr);
     }
     return decodeTextBytes(addr);
   }
+
+  /// 该编码是否是「明文」——明文 ROM 的文本已经是可读字符，
+  /// 不需要再走「双字节查表」那套（UTF-8 汉字是 3 字节，按双字节拆会乱码）。
+  bool get isPlainText =>
+      textEncoding == FeTextEncoding.plainGbk ||
+      textEncoding == FeTextEncoding.plainUtf8;
 
   /// 查双字节字符码的显示字符（按当前编码走不同表）。
   String? lookupChar(int code) {
@@ -418,6 +498,10 @@ class FeRom {
     if (textEncoding == FeTextEncoding.plainGbk) {
       final u = gbkDoubleByte[code];
       return u != null ? String.fromCharCode(u) : null;
+    }
+    if (textEncoding == FeTextEncoding.plainUtf8) {
+      // UTF-8 汉字是 3 字节，不查双字节表；由 TextBrowser 直接解码字节流
+      return String.fromCharCode(code & 0xFF);
     }
     final u = sjisDoubleByte[code];
     return u != null ? String.fromCharCode(u) : null;
@@ -429,6 +513,35 @@ class FeRom {
     final addr = base + index * table.unitDataSize;
     if (addr + 2 > length) return '';
     return decodeText(u16(data, addr + UnitOffsets.nameTextId));
+  }
+
+  /// 该单位在表里的 `nameTextId`（u16@0）；越界返回 -1。
+  int unitNameTextId(int index) {
+    final base = unitBase;
+    if (base < 0) return -1;
+    final addr = base + index * table.unitDataSize;
+    if (addr + 2 > length) return -1;
+    return u16(data, addr + UnitOffsets.nameTextId);
+  }
+
+  /// 是否属于「同音替代」型汉化版（码表正常但用字按读音硬凑）。
+  ///
+  /// 判据：挂了中文码表 + 多字节文本。
+  /// 注意**不能**再要求 `textEncoding != unknown`——FE8 汉化版的
+  /// `textEncoding` 就是 unknown（走的是「unknown + 码表」这条路径），
+  /// 而日版会优先被识别为 huffmanSjis、不会挂码表。
+  bool get usesHomophoneSubstitution => zhTable != null && table.multibyte;
+
+  /// 显示用的角色名：汉化版走正式译名表，其它情况同 [unitName]。
+  ///
+  /// **只用于 UI 展示**。`unitName` 保留原始解码结果（文本查看器、
+  /// 名字反查都得看原文字）。
+  String unitDisplayName(int index) {
+    final raw = unitName(index);
+    if (!usesHomophoneSubstitution) return raw;
+    final id = unitNameTextId(index);
+    if (id < 0) return raw;
+    return fe8FormalNames[id] ?? raw;
   }
 
   // ---------- 表边界 ----------
@@ -477,6 +590,18 @@ class FeRom {
     return n;
   }
 
+  /// 单位表 +5 是该单位的默认职业 ID（不存在时返回 -1）。
+  ///
+  /// FE6/FE7 的 `UnitInfo` 里 `classId == 0` 表示「用角色默认职业」——
+  /// 章节事件里的动态单位常见这种写法（封印第 0 章全是 0）。
+  int unitClassId(int index) {
+    final base = unitBase;
+    if (base < 0) return -1;
+    final at = base + index * table.unitDataSize;
+    if (at + 6 > length) return -1;
+    return data[at + 5];
+  }
+
   /// 角色表有效条目数。
   ///
   /// 单位表的 `u8@4` 是 **unit ID**，从 1 开始连续递增
@@ -511,6 +636,52 @@ class FeRom {
     final addr = base + index * table.itemDataSize;
     if (addr + 2 > length) return '';
     return decodeText(u16(data, addr + ItemOffsets.nameTextId));
+  }
+
+  /// 该职业的 `nameTextId`；越界返回 -1。
+  int classNameTextId(int index) {
+    final base = classBase;
+    if (base < 0) return -1;
+    final addr = base + index * table.classDataSize;
+    if (addr + 2 > length) return -1;
+    return u16(data, addr + ClassOffsets.nameTextId);
+  }
+
+  /// 该道具的 `nameTextId`；越界返回 -1。
+  int itemNameTextId(int index) {
+    final base = itemBase;
+    if (base < 0) return -1;
+    final addr = base + index * table.itemDataSize;
+    if (addr + 2 > length) return -1;
+    return u16(data, addr + ItemOffsets.nameTextId);
+  }
+
+  /// 该职业默认的肖像表索引（`defaultPortraitId`，`ClassOffsets.portraitId`）。
+  /// 与单位表的 face 同属一个肖像 ID 空间，越界返回 -1。
+  int classPortraitId(int index) {
+    final base = classBase;
+    if (base < 0) return -1;
+    final addr = base + index * table.classDataSize;
+    if (addr + ClassOffsets.portraitId + 2 > length) return -1;
+    return u16(data, addr + ClassOffsets.portraitId);
+  }
+
+  /// 显示用的职业名：汉化版走正式译名表。
+  String classDisplayName(int index) {
+    final raw = className(index);
+    if (!usesHomophoneSubstitution) return raw;
+    final id = classNameTextId(index);
+    if (id < 0) return raw;
+    return fe8FormalClassNames[id] ?? raw;
+  }
+
+  /// 显示用的道具名：汉化版走正式译名表。
+  String itemDisplayName(int index) {
+    final raw = itemName(index);
+    if (!usesHomophoneSubstitution) return raw;
+    final id = itemNameTextId(index);
+    if (id < 0) return raw;
+    return fe8FormalItemNames[id] ?? raw;
   }
 }
 

@@ -179,7 +179,8 @@ class PortraitReader {
       final u0 = _u32(at);
       final u4 = _u32(at + 4);
       final u8 = _u32(at + 8);
-      final pointersOk = _isPointerOrNull(u0) && _isPointerOrNull(u4) && _isPointerOrNull(u8);
+      final pointersOk =
+          _isPointerOrNull(u0) && _isPointerOrNull(u4) && _isPointerOrNull(u8);
       if (!pointersOk) break;
       if (u0 == 0 && u4 == 0 && u8 == 0) {
         nulls++;
@@ -195,7 +196,10 @@ class PortraitReader {
 
   int _u32(int at) {
     if (at < 0 || at + 4 > rom.length) return 0;
-    return rom.data[at] | (rom.data[at + 1] << 8) | (rom.data[at + 2] << 16) | (rom.data[at + 3] << 24);
+    return rom.data[at] |
+        (rom.data[at + 1] << 8) |
+        (rom.data[at + 2] << 16) |
+        (rom.data[at + 3] << 24);
   }
 
   static bool _isPointerOrNull(int v) =>
@@ -235,8 +239,9 @@ class PortraitReader {
 
   int _u8(int at) => at >= 0 && at < rom.length ? rom.data[at] : 0;
 
-  int _u16(int at) =>
-      at >= 0 && at + 1 < rom.length ? rom.data[at] | (rom.data[at + 1] << 8) : 0;
+  int _u16(int at) => at >= 0 && at + 1 < rom.length
+      ? rom.data[at] | (rom.data[at + 1] << 8)
+      : 0;
 
   bool _valid(int offset) => offset > 0 && offset < rom.length;
 
@@ -308,7 +313,8 @@ class PortraitReader {
     TileImage.blit(face, pw ~/ 2, ph * 4, pw, ph, src, pw * 4, 0);
     TileImage.blit(face, 0, ph * 3, pw ~/ 2, ph * 2, src, pw * 5, 0);
     TileImage.blit(face, pw + pw ~/ 2, ph * 4, pw, ph, src, pw * 4, ph);
-    TileImage.blit(face, pw * 2 + pw ~/ 2, ph * 3, pw ~/ 2, ph * 2, src, pw * 5 + pw ~/ 2, 0);
+    TileImage.blit(face, pw * 2 + pw ~/ 2, ph * 3, pw ~/ 2, ph * 2, src,
+        pw * 5 + pw ~/ 2, 0);
     return face;
   }
 
@@ -397,6 +403,20 @@ class PortraitReader {
     return decode4bpp(uz, 0, 10 * 8, 10 * 8, pal);
   }
 
+  /// face 字段值 → 肖像表索引。超出表范围或无法映射时返回 null。
+  ///
+  /// **方向**：`_faceOffset` 定义为「肖像索引 + offset == face」的修正量，
+  /// FE6 下它是 -1（即 face = 肖像 + 1），所以反推是 **face + _faceOffset**。
+  /// 常量名字容易看反，这里写死成加法并注明；写成减法会让整个列表偏 2 格
+  /// （实测封印之剑：罗伊 face=2 → 错拿成肖像 3 珐，而前两个角色直接无图）。
+  int? faceToPortraitId(int face) {
+    if (face < 0) return null;
+    final id = face == 0 ? 0 : face + _faceOffset;
+    if (id < 0) return null;
+    if (id >= entryCount) return null;
+    return hasImage(id) ? id : null;
+  }
+
   /// 反查使用该肖像的角色名（单位表优先，其次职业表）。
   String nameFor(int id) {
     final name = _unitNameForFace(id);
@@ -404,6 +424,45 @@ class PortraitReader {
     final cname = _classNameForFace(id);
     if (cname != null && cname.isNotEmpty) return cname;
     return '';
+  }
+
+  /// 反查使用该肖像的**单位表索引**，没有则 null。
+  ///
+  /// 与 [nameFor] 用的是同一套 face 偏移规则（FE6 差 1，FE7/FE8 相同）。
+  int? unitIndexForFace(int id) {
+    final base = rom.unitBase;
+    if (base < 0) return null;
+    final size = rom.table.unitDataSize;
+    final face = id == 0 ? 0 : id - _faceOffset;
+    if (face < 0) return null;
+    for (var i = 0; i < rom.unitCount; i++) {
+      final at = base + i * size;
+      if (at + 8 > rom.length) break;
+      if (_u16(at + UnitOffsets.portraitId) == face) return i;
+    }
+    return null;
+  }
+
+  /// 反查使用该「职业卡」肖像的职业表索引，没有则 null。
+  int? classIndexForFace(int id) {
+    final base = rom.classBase;
+    if (base < 0) return null;
+    final size = rom.table.classDataSize;
+    final face = id == 0 ? 0 : id - _faceOffset;
+    if (face < 0) return null;
+    for (var i = 0; i < rom.classCount; i++) {
+      final at = base + i * size;
+      if (at + 10 > rom.length) break;
+      if (_u16(at + ClassOffsets.portraitId) == face) return i;
+    }
+    return null;
+  }
+
+  /// 该肖像有没有图（没有图的条目只是占位）。
+  bool hasImage(int id) {
+    final e = entryAt(id);
+    if (e == null) return false;
+    return e.unitFace != 0 || e.mapFace != 0 || e.classFace != 0;
   }
 
   /// 单位表里 face 字段的取值集合。
@@ -457,7 +516,7 @@ class PortraitReader {
       if (at + 8 > rom.length) break;
       // face 是 u16：用 u8 读会把 0x0103 截成 0x03，匹配到错误的肖像
       if (_u16(at + UnitOffsets.portraitId) != face) continue;
-      final n = rom.unitName(i);
+      final n = rom.unitDisplayName(i);
       if (n.trim().isNotEmpty) return n.trim();
     }
     return null;
@@ -475,7 +534,7 @@ class PortraitReader {
       final at = base + i * size;
       if (at + 10 > rom.length) break;
       if (_u16(at + ClassOffsets.portraitId) != face) continue;
-      final n = rom.className(i);
+      final n = rom.classDisplayName(i);
       if (n.trim().isNotEmpty) return n.trim();
     }
     return null;

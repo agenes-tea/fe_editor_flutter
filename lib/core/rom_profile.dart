@@ -30,6 +30,10 @@ class RomProfile {
   final int itemDataSize;
   final int portraitDataSize;
 
+  /// 战斗动画表指针槽与条目大小（五个版本都是 32 字节）。
+  final int battleAnimPointerSlot;
+  final int battleAnimDataSize;
+
   /// 识别时用来打分的槽（顺序即权重）。
   ///
   /// 肖像表对多数改版都有效（改版很少动它），所以权重高。
@@ -59,6 +63,8 @@ class RomProfile {
     required this.itemDataSize,
     required this.portraitDataSize,
     required this.signatureSlots,
+    this.battleAnimPointerSlot = 0,
+    this.battleAnimDataSize = 0,
   });
 
   /// 肖像表的指针字段（FE6 是 16 字节条目，只有 3 个指针）。
@@ -83,6 +89,8 @@ class RomProfile {
         maskPointBaseSlot: maskPointBaseSlot,
         portraitPointerSlot: portraitPointerSlot,
         portraitDataSize: portraitDataSize,
+        battleAnimPointerSlot: battleAnimPointerSlot,
+        battleAnimDataSize: battleAnimDataSize,
       );
 
   /// 该档案在 ROM 里的**结构匹配度**：所有特征槽都必须是有效指针。
@@ -118,6 +126,8 @@ const romProfiles = <RomProfile>[
     itemDataSize: 32,
     portraitDataSize: 16,
     signatureSlots: [0x7FD8, 0x17680, 0x176E0, 0x16410],
+    battleAnimPointerSlot: 0x4B0F8,
+    battleAnimDataSize: 32,
   ),
   RomProfile(
     id: 'FE7J',
@@ -136,6 +146,8 @@ const romProfiles = <RomProfile>[
     itemDataSize: 36,
     portraitDataSize: 28,
     signatureSlots: [0x0069C0, 0x09AC50, 0x017CE0, 0x164DC],
+    battleAnimPointerSlot: 0x0549DC,
+    battleAnimDataSize: 32,
   ),
   RomProfile(
     id: 'FE7U',
@@ -154,6 +166,8 @@ const romProfiles = <RomProfile>[
     itemDataSize: 36,
     portraitDataSize: 28,
     signatureSlots: [0x006B30, 0x9A274, 0x178F0, 0x174D4],
+    battleAnimPointerSlot: 0x0541F4,
+    battleAnimDataSize: 32,
   ),
   RomProfile(
     id: 'FE8J',
@@ -172,6 +186,8 @@ const romProfiles = <RomProfile>[
     itemDataSize: 36,
     portraitDataSize: 28,
     signatureSlots: [0x00542C, 0x010650, 0x017860, 0x17568],
+    battleAnimPointerSlot: 0x05A97C,
+    battleAnimDataSize: 32,
   ),
   RomProfile(
     id: 'FE8U',
@@ -190,6 +206,8 @@ const romProfiles = <RomProfile>[
     itemDataSize: 36,
     portraitDataSize: 28,
     signatureSlots: [0x005524, 0x10108, 0x017AB8, 0x177C0],
+    battleAnimPointerSlot: 0x059BD8,
+    battleAnimDataSize: 32,
   ),
 ];
 

@@ -15,6 +15,10 @@ class MainActivity : FlutterActivity() {
     private var pendingResult: MethodChannel.Result? = null
     private var pendingSaveName: String? = null
 
+    /// 上一次用「打开 ROM」选中的文档 URI。
+    /// 覆盖模式要用它直接写回原文件，所以这里保留并申请持久读授权。
+    private var sourceUri: Uri? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
@@ -29,6 +33,10 @@ class MainActivity : FlutterActivity() {
                         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                             addCategory(Intent.CATEGORY_OPENABLE)
                             type = "*/*"
+                            // 需要长期读写授权：覆盖模式要写回同一个文件
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                         }
                         startActivityForResult(intent, REQ_PICK)
                     }
@@ -55,6 +63,59 @@ class MainActivity : FlutterActivity() {
                         }
                         startActivityForResult(intent, REQ_SAVE)
                     }
+                    "overwrite" -> {
+                        val bytes = call.argument<ByteArray>("bytes")
+                        val uri = sourceUri
+                        if (bytes == null) {
+                            result.error("BAD_ARGS", "缺少内容", null)
+                            return@setMethodCallHandler
+                        }
+                        if (uri == null) {
+                            result.error("NO_SOURCE", "没有可覆盖的源文件", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                                out.write(bytes)
+                            } ?: throw IllegalStateException("无法写入所选文件")
+                            result.success(uri.toString())
+                        } catch (e: Exception) {
+                            result.error("WRITE_FAILED", e.message, null)
+                        }
+                    }
+                    "sourceName" -> result.success(sourceUri?.let { displayName(it) })
+                    "readSettings" -> {
+                        val f = File(filesDir, "settings")
+                        result.success(if (f.exists()) f.readText() else null)
+                    }
+                    "writeSettings" -> {
+                        val text = call.argument<String>("text") ?: ""
+                        try {
+                            File(filesDir, "settings").writeText(text)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("WRITE_FAILED", e.message, null)
+                        }
+                    }
+                    "appLogDir" -> {
+                        // 日志写在应用私有目录，不需要存储权限
+                        val dir = File(filesDir, "logs")
+                        dir.mkdirs()
+                        result.success(dir.absolutePath)
+                    }
+                    "openUrl" -> {
+                        val url = call.argument<String>("url")
+                        if (url.isNullOrEmpty()) {
+                            result.error("BAD_ARGS", "缺少 url", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("OPEN_FAILED", e.message, null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -70,6 +131,17 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                     return
                 }
+                sourceUri = uri
+                // 让授权跨进程重启仍有效，否则下次覆盖会被系统拒绝
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (_: SecurityException) {
+                    // 某些文件提供方不支持持久授权，退化为仅本次会话可写
+                }
                 try {
                     result.success(copyToCache(uri))
                 } catch (e: Exception) {
@@ -82,17 +154,20 @@ class MainActivity : FlutterActivity() {
                 val name = pendingSaveName
                 pendingSaveName = null
                 val uri = data?.data
+                val tmp = File(cacheDir, name)
                 if (resultCode != Activity.RESULT_OK || uri == null || name == null) {
+                    tmp.delete()
                     result.success(null)
                     return
                 }
                 try {
-                    val src = File(cacheDir, name)
                     contentResolver.openOutputStream(uri)?.use { out ->
-                        src.inputStream().use { it.copyTo(out) }
+                        tmp.inputStream().use { it.copyTo(out) }
                     }
+                    tmp.delete()
                     result.success(uri.toString())
                 } catch (e: Exception) {
+                    tmp.delete()
                     result.error("WRITE_FAILED", e.message, null)
                 }
             }

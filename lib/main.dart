@@ -3,36 +3,104 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import 'core/app_log.dart';
+import 'core/app_settings.dart';
+import 'core/app_meta.dart';
 import 'core/editable_rom.dart';
+import 'core/feature_flags.dart';
 import 'core/fe_rom.dart';
 import 'core/file_picker_service.dart';
 import 'core/hex_view.dart';
+import 'ui/disasm_page.dart';
 import 'core/patch_format.dart';
-import 'core/patch_library.dart';
 import 'core/text_browser.dart';
 import 'core/text_codec.dart';
+import 'core/text_writer.dart';
+import 'ui/text_edit_dialog.dart';
 import 'core/zh_table.dart';
 import 'core/zh_tables_data.dart';
+import 'ui/about_page.dart';
+import 'ui/battle_anim_page.dart';
+import 'ui/cheat_page.dart';
 import 'ui/item_page.dart';
+import 'ui/settings_page.dart';
+import 'ui/log_page.dart';
+import 'ui/chapter_page.dart';
 import 'ui/portrait_page.dart';
 import 'ui/table_address_page.dart';
+import 'ui/unit_page.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // 先装日志与未捕获异常钩子，再做别的
+  AppLog.instance.install(version: appVersion);
+  await AppSettings.instance.load();
+  AppLog.instance.attachFile();
   runApp(const FeEditorApp());
 }
 
-class FeEditorApp extends StatelessWidget {
+class FeEditorApp extends StatefulWidget {
   const FeEditorApp({super.key});
+
+  @override
+  State<FeEditorApp> createState() => _FeEditorAppState();
+}
+
+class _FeEditorAppState extends State<FeEditorApp> {
+  static const Color _seed = Color(0xFF2E5C8A);
+
+  // 当前主题模式（0=跟随系统 / 1=浅色 / 2=暗色），来自持久化设置。
+  int _modeIndex = AppSettings.instance.themeModeIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    AppSettings.instance.themeNotifier.addListener(_onThemeMode);
+  }
+
+  @override
+  void dispose() {
+    AppSettings.instance.themeNotifier.removeListener(_onThemeMode);
+    super.dispose();
+  }
+
+  void _onThemeMode() {
+    if (!mounted) return;
+    setState(() => _modeIndex = AppSettings.instance.themeModeIndex);
+  }
+
+  static ThemeMode _resolveMode(int i) => switch (i) {
+        1 => ThemeMode.light,
+        2 => ThemeMode.dark,
+        _ => ThemeMode.system,
+      };
+
+  static ThemeData get _lightTheme => ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: _seed,
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+      );
+
+  static ThemeData get _darkTheme => ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: _seed,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+        // 页面底色调成近黑，卡片（surface）略浅，层次感对齐参考图。
+        scaffoldBackgroundColor: const Color(0xFF0E1013),
+      );
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '火纹改版工具',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E5C8A)),
-        useMaterial3: true,
-      ),
+      theme: _lightTheme,
+      darkTheme: _darkTheme,
+      themeMode: _resolveMode(_modeIndex),
       home: const HomePage(),
     );
   }
@@ -58,8 +126,16 @@ class _HomePageState extends State<HomePage> {
       final path = await pickRomFile();
       if (path == null) return;
       final data = await File(path).readAsBytes();
+      // native 把 content:// 桥接成可读写路径时会在 cacheDir 留一份整份 ROM 副本。
+      // 读进内存后即删除，避免每开一个 ROM 都在缓存里积一份、空间持续膨胀。
+      try {
+        await File(path).delete();
+      } catch (_) {
+        // 删除失败不影响已读入内存的 ROM
+      }
       await _load(data, path.split('/').last);
     } catch (e) {
+      AppLog.instance.log('error', '打开 ROM 失败: $e');
       setState(() => _error = '打开失败：$e');
     }
   }
@@ -70,6 +146,8 @@ class _HomePageState extends State<HomePage> {
       final code = data.length >= 0xB0
           ? String.fromCharCodes(data.sublist(0xAC, 0xB0))
           : '????';
+      AppLog.instance
+          .log('error', '无法识别 ROM $name code=$code size=${data.length}');
       setState(() {
         _edit = null;
         _error = '无法识别此 ROM（game code: $code）。\n'
@@ -79,6 +157,12 @@ class _HomePageState extends State<HomePage> {
     }
     final edit = EditableRom.open(data, table);
     await _maybeAttachZhTable(edit);
+    // 换 ROM 必须换缓存命名空间，否则新 ROM 会直接显示上一个 ROM 的肖像
+    PortraitImageCache.instance.bindRom(edit.rom.fingerprint);
+    AppLog.instance.log(
+        'info',
+        '打开 ROM $name ${data.length}B '
+            'code=${edit.rom.gameCode} table=${table.id} text=${edit.rom.textEncoding}');
     setState(() {
       _edit = edit;
       _fileName = name;
@@ -167,6 +251,26 @@ class _HomePageState extends State<HomePage> {
               icon: const Icon(Icons.folder_open),
               label: const Text('选择 ROM 文件'),
             ),
+            TextButton.icon(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const LogViewerPage()),
+                );
+              },
+              icon: const Icon(Icons.notes, size: 18),
+              label: const Text('查看应用日志'),
+            ),
+            TextButton.icon(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => AboutPage()),
+                );
+              },
+              icon: const Icon(Icons.info_outline, size: 18),
+              label: const Text('关于 / 更新日志'),
+            ),
             if (_error != null) ...[
               const SizedBox(height: 24),
               Container(
@@ -176,7 +280,8 @@ class _HomePageState extends State<HomePage> {
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.red.shade200),
                 ),
-                child: Text(_error!, style: TextStyle(color: Colors.red.shade900)),
+                child:
+                    Text(_error!, style: TextStyle(color: Colors.red.shade900)),
               ),
             ],
           ],
@@ -201,14 +306,15 @@ class _HomePageState extends State<HomePage> {
                     style: const TextStyle(fontSize: 13, color: Colors.grey)),
                 const SizedBox(height: 8),
                 Text(rom.table.name,
-                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                    style: const TextStyle(
+                        fontSize: 22, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 12),
                 _kv('游戏代码', rom.gameCode),
                 _kv('头部标题', rom.headerTitle),
-                _kv('ROM 大小', '${(rom.length / 1048576).toStringAsFixed(1)} MB'),
+                _kv('ROM 大小',
+                    '${(rom.length / 1048576).toStringAsFixed(1)} MB'),
                 _kv('文本解码', _textStatus(rom)),
-                if (edit.hasChanges)
-                  _kv('已修改', '${edit.changedByteCount} 字节'),
+                if (edit.hasChanges) _kv('已修改', '${edit.changedByteCount} 字节'),
               ],
             ),
           ),
@@ -226,14 +332,16 @@ class _HomePageState extends State<HomePage> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.warning_amber, color: Colors.orange.shade800, size: 20),
+                Icon(Icons.warning_amber,
+                    color: Colors.orange.shade800, size: 20),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     '未能识别此 ROM 的文本编码（汉化/改版重写过文本引擎），'
                     '角色和职业名会显示异常。数值字段不受影响。'
                     '\n检测详情：$_textDetail',
-                    style: TextStyle(color: Colors.orange.shade900, fontSize: 13),
+                    style:
+                        TextStyle(color: Colors.orange.shade900, fontSize: 13),
                   ),
                 ),
               ],
@@ -250,18 +358,18 @@ class _HomePageState extends State<HomePage> {
             ),
             child: Text(
               '当前版本（${rom.table.id}）的字段级编辑暂未开放，'
-              '可使用只读浏览、十六进制编辑与补丁库。',
+              '可使用只读浏览与十六进制编辑。',
               style: TextStyle(color: Colors.blueGrey.shade800, fontSize: 13),
             ),
           ),
         _section('游戏数据', [
-          _tile('角色', Icons.person, '单位表：等级 / 属性 / 成长率（可编辑）', () {
+          _tile('角色', Icons.person, '肖像 · 职业 · 数值成长（整合页）', () {
             Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => UnitListPage(edit: edit)),
             ).then((_) => setState(() {}));
           }),
-          _tile('职业', Icons.shield, '职业表：移动 / 体格 / 基础值 / 成长率（可编辑）', () {
+          _tile('职业', Icons.shield, '职业表：移动力 / 体格 / 基础值 / 成长率', () {
             Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => ClassListPage(edit: edit)),
@@ -273,9 +381,16 @@ class _HomePageState extends State<HomePage> {
               MaterialPageRoute(builder: (_) => ItemListPage(edit: edit)),
             );
           }),
+          if (Features.chapter)
+            _tile('章节', Icons.map, '地形与初始单位：地图上直接看小人，点格子看地形', () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => ChapterPage(edit: edit)),
+              ).then((_) => setState(() {}));
+            }),
         ]),
         _section('素材预览', [
-          _tile('肖像', Icons.face, '全部角色肖像 / 地图头像 / 职业卡（只读）', () {
+          _tile('肖像', Icons.face, '按角色浏览：正脸 / 眼型 / 嘴型 / 地图头像', () {
             Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => PortraitListPage(edit: edit)),
@@ -287,20 +402,31 @@ class _HomePageState extends State<HomePage> {
               MaterialPageRoute(builder: (_) => TextBrowserPage(edit: edit)),
             );
           }),
+          _tile('战斗动画', Icons.sports_martial_arts, '战斗画面动画：逐帧浏览、调色板与导出', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => BattleAnimListPage(edit: edit)),
+            );
+          }),
         ]),
         _section('工具', [
-          _tile('补丁库', Icons.extension, 'FEBuilderGBA 社区补丁，一键安装', () async {
-            final changed = await Navigator.push<bool>(
+          _tile('修改器', Icons.auto_fix_high, '全局角色强化等批量一键修改', () {
+            Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => PatchListPage(edit: edit)),
-            );
-            if (changed == true && mounted) setState(() {});
+              MaterialPageRoute(builder: (_) => CheatListPage(edit: edit)),
+            ).then((_) => setState(() {}));
           }),
           _tile('十六进制', Icons.code, '按地址查看与修改任意字节、搜索', () {
             Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => HexEditorPage(edit: edit)),
             ).then((_) => setState(() {}));
+          }),
+          _tile('反汇编', Icons.memory, 'ARM/Thumb 机器码反汇编，可跳转与搜索', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => DisasmPage(edit: edit)),
+            );
           }),
           _tile('空位搜索', Icons.search, '查找连续空白区域', () async {
             final result = await Navigator.push<({int offset, int length})>(
@@ -311,7 +437,8 @@ class _HomePageState extends State<HomePage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => HexEditorPage(edit: edit, initialOffset: result.offset),
+                  builder: (_) =>
+                      HexEditorPage(edit: edit, initialOffset: result.offset),
                 ),
               ).then((_) => setState(() {}));
             }
@@ -322,6 +449,26 @@ class _HomePageState extends State<HomePage> {
               MaterialPageRoute(builder: (_) => TableAddressPage(edit: edit)),
             );
             if (changed == true && mounted) setState(() {});
+          }),
+          _tile('设置', Icons.settings, '覆盖模式等保存选项', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsPage()),
+            ).then((_) => setState(() {}));
+          }),
+          _tile('日志', Icons.notes, '错误与操作记录，可复制发给我们排查', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const LogViewerPage()),
+            );
+          }),
+          _tile('关于', Icons.info_outline, '应用信息、更新日志、开源致谢', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const AboutPage(),
+              ),
+            );
           }),
         ]),
       ],
@@ -343,11 +490,14 @@ class _HomePageState extends State<HomePage> {
       case FeTextEncoding.huffmanSjis:
         return '正常（日文）';
       case FeTextEncoding.plainGbk:
-        return '正常（中文·明文）';
+        return '正常（中文·明文 GBK）';
+      case FeTextEncoding.plainUtf8:
+        return '正常（中文·明文 UTF-8）';
       case FeTextEncoding.huffmanZhTbl:
         return '正常（中文·码表 ${rom.zhTable?.table.length ?? 0} 字）';
       case FeTextEncoding.unknown:
-        if (rom.zhTable != null) return '正常（中文·码表 ${rom.zhTable!.table.length} 字）';
+        if (rom.zhTable != null)
+          return '正常（中文·码表 ${rom.zhTable!.table.length} 字）';
         return '异常（改版文本引擎）';
     }
   }
@@ -356,7 +506,9 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
           children: [
-            SizedBox(width: 80, child: Text(k, style: const TextStyle(color: Colors.grey))),
+            SizedBox(
+                width: 80,
+                child: Text(k, style: const TextStyle(color: Colors.grey))),
             Expanded(child: Text(v)),
           ],
         ),
@@ -413,7 +565,8 @@ class _HomePageState extends State<HomePage> {
                 title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                style:
+                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               ),
               const SizedBox(height: 4),
               Text(
@@ -421,7 +574,8 @@ class _HomePageState extends State<HomePage> {
                 maxLines: 3,
                 textAlign: TextAlign.center,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 10.5, color: Colors.grey, height: 1.3),
+                style: const TextStyle(
+                    fontSize: 10.5, color: Colors.grey, height: 1.3),
               ),
             ],
           ),
@@ -444,7 +598,8 @@ class _HomePageState extends State<HomePage> {
             ListTile(
               leading: const Icon(Icons.memory),
               title: const Text('保存修改后的 GBA'),
-              subtitle: Text('${(edit.data.length / 1048576).toStringAsFixed(1)} MB'),
+              subtitle:
+                  Text('${(edit.data.length / 1048576).toStringAsFixed(1)} MB'),
               onTap: () {
                 Navigator.pop(ctx);
                 _exportGba(edit);
@@ -475,36 +630,87 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _exportGba(EditableRom edit) async {
-    final base = (_fileName ?? 'rom.gba').replaceAll(RegExp(r'\.gba$', caseSensitive: false), '');
+    final base = (_fileName ?? 'rom.gba')
+        .replaceAll(RegExp(r'\.gba$', caseSensitive: false), '');
     final name = '${base}_modified.gba';
+
+    // 覆盖模式：写回「打开 ROM」时选中的原文件，不产生新文件。
+    if (AppSettings.instance.overwriteMode) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('直接覆盖原 ROM？'),
+          content: Text(
+            '会用当前修改后的内容覆盖「$_fileName」。\n\n'
+            '原文件将被改写且无法撤销，请确认之前已做好备份。',
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style:
+                  FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+              child: const Text('覆盖'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+      try {
+        final uri = await overwriteSourceRom(edit.data);
+        AppLog.instance.log('info', '覆盖保存 $_fileName ${edit.data.length}B');
+        if (!mounted) return;
+        _toast(uri == null ? '覆盖失败：没有可写回的源文件' : '已覆盖 $_fileName');
+      } catch (e) {
+        AppLog.instance.log('error', '覆盖 $_fileName 失败: $e');
+        if (!mounted) return;
+        _toast('覆盖失败：$e');
+      }
+      return;
+    }
+
     try {
       final saved = await saveFile(name, edit.data);
       if (!mounted) return;
+      if (saved != null) {
+        AppLog.instance.log('info', '导出 GBA $name ${edit.data.length}B');
+      }
       _toast(saved == null ? '已取消' : '已保存 $name');
     } catch (e) {
+      AppLog.instance.log('error', '导出 GBA $name 失败: $e');
       if (!mounted) return;
       _toast('保存失败：$e');
     }
   }
 
   Future<void> _exportPatch(EditableRom edit, {required bool ups}) async {
-    final base = (_fileName ?? 'rom.gba').replaceAll(RegExp(r'\.gba$', caseSensitive: false), '');
+    final base = (_fileName ?? 'rom.gba')
+        .replaceAll(RegExp(r'\.gba$', caseSensitive: false), '');
     final out = edit.buildOutput();
     if (ups) {
       final patch = UpsPatch.create(edit.original, out);
       final ok = await _savePatch('${base}_modified.ups', patch);
       if (!mounted) return;
+      if (ok != null) {
+        AppLog.instance.log('info', '导出 UPS ${patch.length}B');
+      }
       _toast(ok == null ? '已取消' : '已导出 UPS（${_size(patch.length)}）');
       return;
     }
     final patch = IpsPatch.create(edit.original, out);
     if (patch == null) {
+      AppLog.instance.log('warn', 'IPS 导出失败：修改超出 0xFFFFFF 范围');
       if (!mounted) return;
       _toast('修改超出 IPS 可表达范围（0xFFFFFF 之后），请改用 UPS');
       return;
     }
     final ok = await _savePatch('${base}_modified.ips', patch);
     if (!mounted) return;
+    if (ok != null) {
+      AppLog.instance.log('info', '导出 IPS ${patch.length}B');
+    }
     _toast(ok == null ? '已取消' : '已导出 IPS（${_size(patch.length)}）');
   }
 
@@ -512,6 +718,7 @@ class _HomePageState extends State<HomePage> {
     try {
       return await saveFile(name, bytes);
     } catch (e) {
+      AppLog.instance.log('error', '导出补丁 $name 失败: $e');
       if (mounted) _toast('导出失败：$e');
       return null;
     }
@@ -527,310 +734,6 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// ---------- 通用列表 ----------
-
-class _Row {
-  final int index;
-  final String name;
-  _Row(this.index, this.name);
-}
-
-// ---------- 角色 ----------
-
-class UnitListPage extends StatefulWidget {
-  final EditableRom edit;
-  const UnitListPage({super.key, required this.edit});
-
-  @override
-  State<UnitListPage> createState() => _UnitListPageState();
-}
-
-class _UnitListPageState extends State<UnitListPage> {
-  late List<_Row> _items = _build();
-
-  List<_Row> _build() {
-    final rom = widget.edit.rom;
-    final items = <_Row>[];
-    // ID 恒等于表内偏移：不跳过空条目，否则改版作者按 ID 找数据会错位。
-    for (var i = 0; i < rom.unitCount; i++) {
-      final name = rom.unitName(i).trim();
-      items.add(_Row(i, name.isEmpty ? '（未命名）' : name));
-    }
-    return items;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('角色 (${_items.length})')),
-      body: ListView.separated(
-        itemCount: _items.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
-        itemBuilder: (_, idx) {
-          final r = _items[idx];
-          return ListTile(
-            leading: CircleAvatar(child: Text('${r.index + 1}')),
-            title: Text(r.name),
-            subtitle: Text('ID ${r.index}'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => UnitEditPage(edit: widget.edit, index: r.index),
-              ),
-            ).then((_) => setState(() => _items = _build())),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class UnitEditPage extends StatefulWidget {
-  final EditableRom edit;
-  final int index;
-  const UnitEditPage({super.key, required this.edit, required this.index});
-
-  @override
-  State<UnitEditPage> createState() => _UnitEditPageState();
-}
-
-class _UnitEditPageState extends State<UnitEditPage> {
-  late final int _addr = widget.edit.unitAddress(widget.index);
-  bool get _canEdit => versionSupportsEditing(widget.edit.rom.table.id);
-
-  @override
-  Widget build(BuildContext context) {
-    final edit = widget.edit;
-    final rom = edit.rom;
-    return Scaffold(
-      appBar: AppBar(title: Text(rom.unitName(widget.index))),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: Column(
-                children: [
-                  for (final f in unitEditableFields)
-                    _FieldTile(
-                      field: f,
-                      value: edit.readField(_addr, f),
-                      readOnly: !_canEdit,
-                      onChanged: (v) {
-                        setState(() => edit.writeField(_addr, f, v));
-                      },
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _addressNote(_addr),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------- 职业 ----------
-
-class ClassListPage extends StatefulWidget {
-  final EditableRom edit;
-  const ClassListPage({super.key, required this.edit});
-
-  @override
-  State<ClassListPage> createState() => _ClassListPageState();
-}
-
-class _ClassListPageState extends State<ClassListPage> {
-  late List<_Row> _items = _build();
-
-  List<_Row> _build() {
-    final rom = widget.edit.rom;
-    final items = <_Row>[];
-    for (var i = 0; i < rom.classCount; i++) {
-      final name = rom.className(i).trim();
-      items.add(_Row(i, name.isEmpty ? '（未命名）' : name));
-    }
-    return items;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('职业 (${_items.length})')),
-      body: ListView.separated(
-        itemCount: _items.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
-        itemBuilder: (_, idx) {
-          final r = _items[idx];
-          return ListTile(
-            leading: CircleAvatar(child: Text('${r.index}')),
-            title: Text(r.name),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => ClassEditPage(edit: widget.edit, index: r.index),
-              ),
-            ).then((_) => setState(() => _items = _build())),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class ClassEditPage extends StatefulWidget {
-  final EditableRom edit;
-  final int index;
-  const ClassEditPage({super.key, required this.edit, required this.index});
-
-  @override
-  State<ClassEditPage> createState() => _ClassEditPageState();
-}
-
-class _ClassEditPageState extends State<ClassEditPage> {
-  late final int _addr = widget.edit.classAddress(widget.index);
-  bool get _canEdit => versionSupportsEditing(widget.edit.rom.table.id);
-
-  @override
-  Widget build(BuildContext context) {
-    final edit = widget.edit;
-    final rom = edit.rom;
-    return Scaffold(
-      appBar: AppBar(title: Text(rom.className(widget.index))),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: Column(
-                children: [
-                  for (final f in classEditableFields)
-                    _FieldTile(
-                      field: f,
-                      value: edit.readField(_addr, f),
-                      readOnly: !_canEdit,
-                      onChanged: (v) {
-                        setState(() => edit.writeField(_addr, f, v));
-                      },
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _addressNote(_addr),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------- 字段行 ----------
-
-class _FieldTile extends StatelessWidget {
-  final EditField field;
-  final int value;
-  final ValueChanged<int> onChanged;
-  final bool readOnly;
-
-  const _FieldTile({
-    required this.field,
-    required this.value,
-    required this.onChanged,
-    this.readOnly = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (readOnly) {
-      return ListTile(
-        dense: true,
-        title: Text(field.label),
-        trailing: Text(
-          '$value',
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-        ),
-      );
-    }
-    return ListTile(
-      dense: true,
-      title: Text(field.label),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.remove_circle_outline, size: 20),
-            onPressed: value > field.min ? () => onChanged(value - 1) : null,
-          ),
-          SizedBox(
-            width: 44,
-            child: Text(
-              '$value',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.add_circle_outline, size: 20),
-            onPressed: value < field.max ? () => onChanged(value + 1) : null,
-          ),
-        ],
-      ),
-      onTap: () => _editDirect(context),
-    );
-  }
-
-  Future<void> _editDirect(BuildContext context) async {
-    final ctrl = TextEditingController(text: '$value');
-    final v = await showDialog<int>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(field.label),
-        content: TextField(
-          controller: ctrl,
-          keyboardType: TextInputType.number,
-          autofocus: true,
-          decoration: InputDecoration(
-            helperText: '范围 ${field.min} ~ ${field.max}',
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(
-            onPressed: () {
-              final parsed = int.tryParse(ctrl.text.trim());
-              Navigator.pop(ctx, parsed);
-            },
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-    if (v != null) onChanged(v);
-  }
-}
-
-Widget _addressNote(int addr) {
-  return Container(
-    padding: const EdgeInsets.all(12),
-    decoration: BoxDecoration(
-      color: Colors.blue.shade50,
-      borderRadius: BorderRadius.circular(8),
-      border: Border.all(color: Colors.blue.shade200),
-    ),
-    child: Text(
-      '结构地址 0x${addr.toRadixString(16).padLeft(8, '0').toUpperCase()}　'
-      '改动只作用于内存副本，导出时才写文件。',
-      style: TextStyle(color: Colors.blue.shade900, fontSize: 12),
-    ),
-  );
-}
-
 // ---------- 十六进制编辑器 ----------
 
 class HexEditorPage extends StatefulWidget {
@@ -843,17 +746,30 @@ class HexEditorPage extends StatefulWidget {
 }
 
 class _HexEditorPageState extends State<HexEditorPage> {
-  static const double _rowHeight = 22;
+  static const double _rowHeight = 26;
   late final HexView _view = HexView(widget.edit.buffer);
   late final ScrollController _scroll = ScrollController();
   final _searchCtrl = TextEditingController();
   int _highlight = -1;
 
+  /// 当前每行字节数（按屏幕宽度自适应，避免换行被裁掉）
+  int _perRow = 8;
+
+  /// 已修改过的字节偏移（界面高亮显示）
+  final Set<int> _dirty = {};
+
+  /// 当前选中待编辑的字节偏移（-1 = 未选中）
+  int _selected = -1;
+
+  /// 正在输入的十六进制（0~2 位，输入满 2 位即写回）
+  String _input = '';
+
   @override
   void initState() {
     super.initState();
     if (widget.initialOffset > 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(widget.initialOffset));
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _jumpTo(widget.initialOffset));
     }
   }
 
@@ -864,8 +780,16 @@ class _HexEditorPageState extends State<HexEditorPage> {
     super.dispose();
   }
 
+  /// 根据可用宽度算每行能排几个字节（地址 8 字符 + 每字节 3 字符）
+  int _calcPerRow(double maxWidth) {
+    // 地址列 ≈ 66px，每字节单元 ≈ 30px
+    final usable = maxWidth - 66;
+    final n = (usable / 30).floor();
+    return n.clamp(4, 16);
+  }
+
   void _jumpTo(int offset) {
-    final row = offset ~/ HexView.bytesPerRow;
+    final row = offset ~/ _perRow;
     final target = row * _rowHeight;
     if (_scroll.hasClients) {
       _scroll.jumpTo(target.clamp(0, _scroll.position.maxScrollExtent));
@@ -885,7 +809,8 @@ class _HexEditorPageState extends State<HexEditorPage> {
           decoration: const InputDecoration(hintText: '十六进制，如 0xC4C158'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, ctrl.text),
             child: const Text('跳转'),
@@ -894,7 +819,10 @@ class _HexEditorPageState extends State<HexEditorPage> {
       ),
     );
     if (input == null) return;
-    final cleaned = input.trim().replaceAll(RegExp(r'^0[xX]'), '').replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
+    final cleaned = input
+        .trim()
+        .replaceAll(RegExp(r'^0[xX]'), '')
+        .replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
     final v = int.tryParse(cleaned, radix: 16);
     if (v == null || v < 0 || v >= _view.buffer.length) {
       _toast('地址无效');
@@ -918,49 +846,91 @@ class _HexEditorPageState extends State<HexEditorPage> {
     _toast('找到 ${hits.length} 处，已跳到第一处');
   }
 
-  Future<void> _editByte(int offset) async {
-    final current = _view.buffer.u8(offset);
-    final ctrl = TextEditingController(
-      text: current.toRadixString(16).padLeft(2, '0').toUpperCase(),
-    );
-    final v = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('修改 0x${offset.toRadixString(16).toUpperCase()}'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(
-            helperText: '两位十六进制，00 ~ FF',
-            prefixText: '0x',
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-    if (v == null) return;
-    final parsed = int.tryParse(v.trim().replaceAll(RegExp(r'^0[xX]'), ''), radix: 16);
-    if (parsed == null || parsed < 0 || parsed > 0xFF) {
-      _toast('请输入 00 ~ FF');
+  /// 选中某个字节以编辑（配合底部数字键盘输入，输入满 2 位自动写回）。
+  void _select(int offset) {
+    setState(() {
+      _selected = offset;
+      _input = '';
+    });
+  }
+
+  /// 数字键盘 0~F：向选中字节追加一位，凑满两位即写回。
+  void _pad(String digit) {
+    if (_selected < 0) return;
+    final next = _input + digit;
+    if (next.length < 2) {
+      setState(() => _input = next);
       return;
     }
+    _input = '';
+    _commitByte(int.parse(next, radix: 16));
+  }
+
+  void _deselect() {
+    setState(() {
+      _selected = -1;
+      _input = '';
+    });
+  }
+
+  /// 写回选中字节的值（同值不写；记录 edits 以便撤销）。
+  void _commitByte(int val) {
+    final offset = _selected;
+    if (offset < 0) return;
     final before = _view.buffer.u8(offset);
-    if (before == parsed) return;
-    _view.buffer.writeU8(offset, parsed);
-    widget.edit.edits.add(ByteEdit(offset, before, parsed));
+    if (before == val) return;
+    _view.buffer.writeU8(offset, val);
+    widget.edit.edits.add(ByteEdit(offset, before, val));
+    _dirty.add(offset);
     setState(() {});
+  }
+
+  String get _valDisplay {
+    if (_selected < 0) return '——';
+    if (_input.isNotEmpty) return _input.padRight(2, ' ');
+    return _view.buffer
+        .u8(_selected)
+        .toRadixString(16)
+        .padLeft(2, '0')
+        .toUpperCase();
+  }
+
+  String get _posDisplay {
+    if (_selected < 0) return '——';
+    return '0x${_selected.toRadixString(16).toUpperCase()}';
+  }
+
+  String get _gbaDisplay {
+    if (_selected < 0) return '——';
+    return '0x${(_selected + 0x08000000).toRadixString(16).toUpperCase()}';
   }
 
   void _toast(String msg) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// 当前关注的位置：优先选中的字节，其次视口顶部那一行。
+  int get _focusOffset {
+    if (_selected >= 0) return _selected;
+    if (_scroll.hasClients) {
+      final row = (_scroll.offset / _rowHeight).floor();
+      final at = row * _perRow;
+      return at.clamp(0, _view.buffer.length - 1);
+    }
+    return widget.initialOffset;
+  }
+
+  /// 把当前位置交给反汇编页（按 Thumb 打开，游戏里大多数函数是 Thumb）。
+  void _openDisassembler() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            DisasmPage(edit: widget.edit, initialOffset: _focusOffset),
+      ),
+    );
   }
 
   @override
@@ -971,140 +941,233 @@ class _HexEditorPageState extends State<HexEditorPage> {
         title: const Text('十六进制编辑器'),
         actions: [
           IconButton(
+            tooltip: '从当前位置反汇编',
+            icon: const Icon(Icons.memory),
+            onPressed: _openDisassembler,
+          ),
+          IconButton(
             tooltip: '跳转地址',
             icon: const Icon(Icons.my_location),
             onPressed: _gotoDialog,
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _searchCtrl,
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      hintText: '搜索十六进制，如 12 34 AB',
-                      border: OutlineInputBorder(),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final perRow = _calcPerRow(constraints.maxWidth);
+          if (perRow != _perRow) {
+            // 宽度变化时重排行宽，保持滚动位置大致不变
+            final anchor = _scroll.hasClients
+                ? (_scroll.offset / _rowHeight).round() * _perRow
+                : 0;
+            _perRow = perRow;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!_scroll.hasClients) return;
+              final target = (anchor ~/ _perRow) * _rowHeight;
+              _scroll.jumpTo(target.clamp(0, _scroll.position.maxScrollExtent));
+            });
+          }
+          final rowCount = (_view.buffer.length + _perRow - 1) ~/ _perRow;
+          return Column(
+            children: [
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _searchCtrl,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          hintText: '搜索十六进制，如 12 34 AB',
+                          border: OutlineInputBorder(),
+                        ),
+                        onSubmitted: (_) => _search(),
+                      ),
                     ),
-                    onSubmitted: (_) => _search(),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filledTonal(
-                  onPressed: _search,
-                  icon: const Icon(Icons.search),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: ListView.builder(
-              controller: _scroll,
-              itemExtent: _rowHeight,
-              itemCount: _view.rowCount,
-              itemBuilder: (_, row) {
-                final isHit = row == _highlight;
-                return GestureDetector(
-                  onTap: () => _jumpTo(_view.rowOffset(row)),
-                  child: Container(
-                    color: isHit ? theme.colorScheme.primaryContainer : null,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Row(
-                      children: [
-                        Text(
-                          _view.offsetLabel(row),
-                          style: TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 11,
-                            color: theme.colorScheme.primary,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _view.hexAt(row),
-                            style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-                          ),
-                        ),
-                        Text(
-                          _view.asciiAt(row),
-                          style: TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 11,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                      ],
+                    const SizedBox(width: 8),
+                    IconButton.filledTonal(
+                      onPressed: _search,
+                      icon: const Icon(Icons.search),
                     ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.all(8),
-            color: theme.colorScheme.surfaceContainerHighest,
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '点击行跳转；要精确改某个字节，输入地址后用下方按钮',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
-                  ),
+                  ],
                 ),
-                TextButton.icon(
-                  onPressed: () async {
-                    final ctrl = TextEditingController(
-                      text: _highlight >= 0
-                          ? _view.rowOffset(_highlight).toRadixString(16).toUpperCase()
-                          : '',
-                    );
-                    final input = await showDialog<String>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('改字节'),
-                        content: TextField(
-                          controller: ctrl,
-                          autofocus: true,
-                          decoration: const InputDecoration(hintText: '地址（十六进制）'),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            child: const Text('取消'),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.builder(
+                  controller: _scroll,
+                  itemExtent: _rowHeight,
+                  itemCount: rowCount,
+                  itemBuilder: (_, row) {
+                    final isHit = row == _highlight;
+                    final start = row * _perRow;
+                    return Container(
+                      color: isHit ? theme.colorScheme.primaryContainer : null,
+                      padding: const EdgeInsets.only(left: 6, right: 6),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 60,
+                            child: Text(
+                              (start)
+                                  .toRadixString(16)
+                                  .padLeft(8, '0')
+                                  .toUpperCase(),
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 11,
+                                color: theme.colorScheme.primary,
+                              ),
+                            ),
                           ),
-                          FilledButton(
-                            onPressed: () => Navigator.pop(ctx, ctrl.text),
-                            child: const Text('下一步'),
-                          ),
+                          for (var i = 0; i < _perRow; i++)
+                            if (start + i < _view.buffer.length)
+                              _byteCell(start + i, theme)
+                            else
+                              const SizedBox(width: 26),
                         ],
                       ),
                     );
-                    if (input == null) return;
-                    final cleaned = input
-                        .trim()
-                        .replaceAll(RegExp(r'^0[xX]'), '')
-                        .replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
-                    final addr = int.tryParse(cleaned, radix: 16);
-                    if (addr == null || addr < 0 || addr >= _view.buffer.length) {
-                      _toast('地址无效');
-                      return;
-                    }
-                    await _editByte(addr);
                   },
-                  icon: const Icon(Icons.edit, size: 16),
-                  label: const Text('改字节'),
                 ),
+              ),
+              _editBar(theme),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// 底部编辑区：状态栏（Val/Pos/GBA/Size）+ 十六进制数字键盘。
+  Widget _editBar(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    final sizeHex = '0x${_view.buffer.length.toRadixString(16).toUpperCase()}';
+    final enabled = _selected >= 0;
+    return Container(
+      color: scheme.surfaceContainerHighest,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Text(
+                      'Val: $_valDisplay  ·  Pos: $_posDisplay'
+                      '  ·  GBA: $_gbaDisplay  ·  Size: $sizeHex  ·  [HEX]',
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        color: enabled ? scheme.primary : Colors.grey.shade600,
+                      ),
+                    ),
+                  ),
+                ),
+                if (enabled)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.close, size: 18),
+                    tooltip: '取消选择',
+                    onPressed: _deselect,
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            child: Column(
+              children: [
+                _padRow(const ['0', '1', '2', '3', '4', '5', '6', '7'], theme),
+                const SizedBox(height: 4),
+                _padRow(const ['8', '9', 'A', 'B', 'C', 'D', 'E', 'F'], theme),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 数字键盘的一行（未选中时灰显，选中时可点）。
+  Widget _padRow(List<String> digits, ThemeData theme) {
+    final enabled = _selected >= 0;
+    final scheme = theme.colorScheme;
+    return Row(
+      children: [
+        for (final d in digits)
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: InkWell(
+                onTap: enabled ? () => _pad(d) : null,
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  height: 44,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: scheme.outlineVariant),
+                  ),
+                  child: Text(
+                    d,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: enabled
+                          ? scheme.primary
+                          : scheme.onSurface.withValues(alpha: 0.35),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 单个字节：显示两位十六进制，点击选中后在底部键盘输入改值；改过的字节用底色标出。
+  Widget _byteCell(int offset, ThemeData theme) {
+    final v = _view.buffer.u8(offset);
+    final text = v.toRadixString(16).padLeft(2, '0').toUpperCase();
+    final isDirty = _dirty.contains(offset);
+    final isSel = _selected == offset;
+    return InkWell(
+      onTap: () => _select(offset),
+      borderRadius: BorderRadius.circular(3),
+      child: Container(
+        width: 26,
+        height: 20,
+        margin: const EdgeInsets.symmetric(horizontal: 1),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(3),
+          color: isSel
+              ? theme.colorScheme.primaryContainer
+              : (isDirty ? theme.colorScheme.tertiaryContainer : null),
+          border: isSel
+              ? Border.all(color: theme.colorScheme.primary, width: 1.5)
+              : null,
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 11,
+            fontWeight: v == 0 ? FontWeight.normal : FontWeight.w600,
+            color: v == 0
+                ? Colors.grey.shade500
+                : (isSel ? theme.colorScheme.onPrimaryContainer : null),
+          ),
+        ),
       ),
     );
   }
@@ -1197,7 +1260,8 @@ class _FreeSpacePageState extends State<FreeSpacePage> {
                         ButtonSegment(value: false, label: Text('00')),
                       ],
                       selected: {_fillFF},
-                      onSelectionChanged: (s) => setState(() => _fillFF = s.first),
+                      onSelectionChanged: (s) =>
+                          setState(() => _fillFF = s.first),
                     ),
                   ],
                 ),
@@ -1250,218 +1314,6 @@ class _FreeSpacePageState extends State<FreeSpacePage> {
   }
 }
 
-// ---------- 补丁库 ----------
-
-class PatchListPage extends StatefulWidget {
-  final EditableRom edit;
-  const PatchListPage({super.key, required this.edit});
-
-  @override
-  State<PatchListPage> createState() => _PatchListPageState();
-}
-
-class _PatchListPageState extends State<PatchListPage> {
-  PatchLibrary? _lib;
-  bool _loading = true;
-  String? _error;
-  bool _changed = false;
-  final _filter = TextEditingController();
-
-  String get _assetDir => 'assets/patches/${widget.edit.rom.table.id}';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _filter.dispose();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
-    try {
-      final lib = await PatchLibrary.loadFromAssets(_assetDir);
-      if (!mounted) return;
-      setState(() {
-        _lib = lib;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = '$e';
-        _loading = false;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) Navigator.pop(context, _changed);
-      },
-      child: Scaffold(
-        appBar: AppBar(title: const Text('补丁库')),
-        body: _buildBody(),
-      ),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text('加载补丁库失败：$_error'),
-        ),
-      );
-    }
-    final lib = _lib!;
-    if (lib.patches.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            '这个版本（${widget.edit.rom.table.id}）暂无内置补丁。\n'
-            '目前收录了 FEBuilderGBA 中「固定字节写入」类补丁。',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey.shade600),
-          ),
-        ),
-      );
-    }
-
-    final q = _filter.text.trim().toLowerCase();
-    final list = q.isEmpty
-        ? lib.patches
-        : lib.patches.where((p) =>
-            p.name.toLowerCase().contains(q) ||
-            p.info.toLowerCase().contains(q)).toList();
-
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: TextField(
-            controller: _filter,
-            decoration: InputDecoration(
-              isDense: true,
-              hintText: '搜索补丁（共 ${lib.patches.length} 个）',
-              prefixIcon: const Icon(Icons.search, size: 20),
-              border: const OutlineInputBorder(),
-            ),
-            onChanged: (_) => setState(() {}),
-          ),
-        ),
-        Expanded(
-          child: ListView.separated(
-            itemCount: list.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (_, i) {
-              final p = list[i];
-              final installed = isPatchInstalled(p, widget.edit.data);
-              return ListTile(
-                leading: Icon(
-                  installed ? Icons.check_circle : Icons.radio_button_unchecked,
-                  color: installed ? Colors.green : Colors.grey,
-                ),
-                title: Text(p.name, maxLines: 2, overflow: TextOverflow.ellipsis),
-                subtitle: p.info.isEmpty
-                    ? null
-                    : Text(p.info.split('\n').first,
-                        maxLines: 2, overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 12)),
-                trailing: installed
-                    ? const Text('已安装', style: TextStyle(fontSize: 12, color: Colors.green))
-                    : TextButton(
-                        onPressed: () => _install(p),
-                        child: const Text('安装'),
-                      ),
-                onTap: () => _showDetail(p),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  void _showDetail(FePatch p) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(p.name),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (p.info.isNotEmpty) Text(p.info),
-              if (p.author.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Text('作者：${p.author}',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-              ],
-              const SizedBox(height: 12),
-              Text('写入位置：${p.writes.length} 处',
-                  style: const TextStyle(fontSize: 12)),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
-          if (!isPatchInstalled(p, widget.edit.data))
-            FilledButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                _install(p);
-              },
-              child: const Text('安装'),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _install(FePatch p) async {
-    final e = widget.edit;
-    final before = Uint8List.fromList(e.data);
-    final result = await applyPatch(p, e.data);
-    if (!mounted) return;
-    if (!result.ok) {
-      e.data.setAll(0, before);
-      _toast(result.message);
-      return;
-    }
-    for (final u in result.undo) {
-      if (u.before.length == 1) {
-        e.edits.add(ByteEdit(u.offset, u.before[0], e.data[u.offset]));
-      } else {
-        for (var i = 0; i < u.before.length; i++) {
-          e.edits.add(ByteEdit(
-            u.offset + i,
-            u.before[i],
-            e.data[u.offset + i],
-          ));
-        }
-      }
-    }
-    setState(() => _changed = true);
-    _toast('已安装 ${p.name}');
-  }
-
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg)));
-  }
-}
-
 // ---------- 文本查看器 ----------
 
 class TextBrowserPage extends StatefulWidget {
@@ -1473,7 +1325,9 @@ class TextBrowserPage extends StatefulWidget {
 }
 
 class _TextBrowserPageState extends State<TextBrowserPage> {
-  late final TextBrowser _browser = TextBrowser(widget.edit.rom);
+  // 文本写入器（只对明文 UTF-8/GBK 生效），同时提供读实时 buffer 的 FeRom 视图
+  late final TextWriter _writer = TextWriter(widget.edit);
+  late final TextBrowser _browser = TextBrowser(_writer.rom);
   final _filter = TextEditingController();
   List<_TextRow> _rows = [];
   int _total = 0;
@@ -1524,7 +1378,8 @@ class _TextBrowserPageState extends State<TextBrowserPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_done ? '文本 ($_rowsCount)' : '文本 (加载中 $_rowsCount…)')),
+      appBar: AppBar(
+          title: Text(_done ? '文本 ($_rowsCount)' : '文本 (加载中 $_rowsCount…)')),
       body: Column(
         children: [
           Padding(
@@ -1554,9 +1409,8 @@ class _TextBrowserPageState extends State<TextBrowserPage> {
 
   Widget _buildList(List<_TextRow> rows) {
     final q = _filter.text.trim();
-    final list = q.isEmpty
-        ? rows
-        : rows.where((r) => r.text.contains(q)).toList();
+    final list =
+        q.isEmpty ? rows : rows.where((r) => r.text.contains(q)).toList();
     return ListView.separated(
       itemCount: list.length + (_done ? 0 : 1),
       separatorBuilder: (_, __) => const Divider(height: 1),
@@ -1600,18 +1454,61 @@ class _TextBrowserPageState extends State<TextBrowserPage> {
   }
 
   void _showFull(_TextRow r) {
+    final canEdit = _writer.supported && _writer.entryEditable(r.id);
+    final title =
+        '文本 0x${r.id.toRadixString(16).toUpperCase().padLeft(4, '0')}';
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('文本 0x${r.id.toRadixString(16).toUpperCase().padLeft(4, '0')}'),
+        title: Text(title),
         content: SingleChildScrollView(
-          child: SelectableText(r.text, style: const TextStyle(fontSize: 14, height: 1.5)),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(r.text,
+                  style: const TextStyle(fontSize: 14, height: 1.5)),
+              if (!canEdit) ...[
+                const SizedBox(height: 10),
+                Text(
+                  '此 ROM 的文本引擎未识别，暂不支持写入。',
+                  style:
+                      TextStyle(fontSize: 11, color: Theme.of(ctx).hintColor),
+                ),
+              ],
+            ],
+          ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
+          if (canEdit)
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                final changed = await showTextEditDialog(
+                  context,
+                  edit: widget.edit,
+                  textId: r.id,
+                  title: '编辑 $title',
+                );
+                if (changed && mounted) {
+                  _refreshRow(r.id);
+                  setState(() {});
+                }
+              },
+              child: const Text('编辑'),
+            ),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
         ],
       ),
     );
+  }
+
+  /// 编辑后刷新列表里那一行的文本（读实时 buffer）。
+  void _refreshRow(int id) {
+    final i = _rows.indexWhere((row) => row.id == id);
+    if (i < 0) return;
+    _rows[i] = _TextRow(id, _browser.render(id));
   }
 }
 

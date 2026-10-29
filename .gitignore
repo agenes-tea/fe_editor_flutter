@@ -50,3 +50,7 @@ android/release.keystore
 *.keystore
 *.jks
 android/key.properties
+
+# 生成产物：gen_patch.py 会重新生成（真正的运行时资源在 assets/debugger/）
+/tool/debugger_patch/*.json
+__pycache__/

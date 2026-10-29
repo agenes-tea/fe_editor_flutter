@@ -122,51 +122,60 @@ void main() {
       }
     });
 
-    test('FE6 的道具表布局不同，不提供武器等级', () {
+    test('FE6 的熟练度用另一套档位（阶差 50）', () {
       final rom = _open(fe6jp);
       final cat = ItemCatalog(rom);
-      expect(cat.hasWeaponRank, isFalse);
-      // FE6 的 +28 取值与 FE7 的等级阈值集合不同（不能当等级用）
-      final fe6Values = cat.grouped()[ItemGroup.weapon]!
-          .map((e) => e.weaponRankValue)
-          .toSet();
-      final fe7Values = ItemCatalog(_open(fe7jp))
-          .grouped()[ItemGroup.weapon]!
-          .map((e) => e.weaponRankValue)
-          .toSet();
-      expect(fe6Values, isNot(equals(fe7Values)));
+      expect(cat.isFe6, isTrue);
+      // FE6 的 +28 是 01/33/65/97/C9/FB，不能拿 FE7 的阈值判定
+      const known = {0x00, 0x01, 0x33, 0x65, 0x97, 0xC9, 0xFB};
+      for (final e in cat.grouped()[ItemGroup.weapon]!) {
+        expect(known, contains(e.weaponRankValue),
+            reason: 'item ${e.id} 的 +28 = ${e.weaponRankValue}');
+      }
+      // 同一个字面值在两版里含义不同：0x33 在 FE6 是 D，在 FE7/FE8 是 D 以上
+      // （FE7/FE8 的 C 阈值 0x47 比它大，所以它也落在 D）。
+      expect(WeaponRank.fromValue(0x33, fe6: true), WeaponRank.d);
+      expect(WeaponRank.fromValue(0x40, fe6: true), WeaponRank.d);
+      expect(WeaponRank.fromValue(0x40, fe6: false), WeaponRank.d);
+      expect(WeaponRank.fromValue(0x47, fe6: false), WeaponRank.c);
+      expect(WeaponRank.fromValue(0x47, fe6: true), WeaponRank.d);
     });
   });
 
   group('武器属性（对照游戏内截图）', () {
-    test('FE6 汉化版「铁剑」= 耐久46 / 重量5 / 命中85 / 威力5 / 射程1', () {
-      // 依据用户提供的封印之剑游戏内截图：
-      //   Possession item 2/3 → 铁剑 46/46E，Help 窗口：剑E 射程1 重量5 助0 命中85 必杀0
-      //   → item 1 的 +20=46(耐久) +21=5(重量) +22=85(命中) +23=5(威力) +24=0(助)
-      //     +25=0x11(射程1) +28=1(等级E)
+    test('FE6 汉化版「铁剑」= 耐久46 / 威力5 / 重量5 / 命中85 / 必杀0 / 单价10', () {
+      // 依据用户提供的封印之剑游戏内截图（铁剑 46/46E，Help：剑E 射程1
+      // 重量5 命中85 必杀0）与 FE6 wiki（Mt5 / Wt5 / Hit85 / Uses46 / Worth460）：
+      //   item 1 的 +20=46(耐久) +21=5(威力) +22=85(命中) +23=5(重量)
+      //     +24=0(必杀) +25=0x11(射程1) +26=10(单价，46×10=460) +28=1(等级E)
       final rom = _open(fe6cn);
       final cat = ItemCatalog(rom);
       final e = cat.entryAt(1)!;
       expect(e.kind, ItemKind.sword);
       expect(e.durability, 46);
+      expect(e.might, 5);
       expect(e.weight, 5);
       expect(e.hit, 85);
-      expect(e.might, 5);
-      expect(e.assist, 0);
+      expect(e.crit, 0);
+      expect(e.unitPrice, 10);
+      expect(e.durability * e.unitPrice, 460);
       expect(e.range.raw, 0x11);
       expect(e.range.label, '射程 1');
       expect(e.weaponRankValue, 1);
     });
 
-    test('FE6 汉化版「铁枪」= 耐久45 / 重量7 / 命中70', () {
-      // 截图：铁枪 45/45，Help：枪 射程1 重量7 命中70
+    test('FE6 汉化版「铁枪」= 威力7 / 重量8（两字段不同值，能区分对调）', () {
+      // FE6 wiki：Iron Lance Mt7 / Wt8 / Hit70 / Uses45 / Worth360 → 单价 8
       final rom = _open(fe6cn);
       final cat = ItemCatalog(rom);
       final e = cat.entryAt(16)!;
       expect(e.kind, ItemKind.lance);
       expect(e.durability, 45);
-      expect(e.weight, 7);
+      expect(e.might, 7);
+      expect(e.weight, 8);
       expect(e.hit, 70);
+      expect(e.unitPrice, 8);
+      expect(e.durability * e.unitPrice, 360);
       expect(e.range.raw, 0x11);
     });
 
@@ -191,6 +200,58 @@ void main() {
       expect(e.durability, 46);
       expect(e.hit, 90);
       expect(e.might, 5);
+      expect(e.weight, 5);
+    });
+
+    test('FE7J 银剑：威力13 / 重量8（两个字段值不同，能区分对调）', () {
+      // Fire Emblem wiki：FE7 银剑 Mt13 / Wt8 / Hit75 / Uses20 / Worth1500 → 单价 75
+      final cat = ItemCatalog(_open(fe7jp));
+      final e = cat.entryAt(4)!;
+      expect(e.might, 13);
+      expect(e.weight, 8);
+      expect(e.hit, 80);
+      expect(e.durability * e.unitPrice, 1500);
+    });
+
+    test('FE7J 必杀系武器：+24 就是必杀值', () {
+      // 必杀剑 30 / 必杀枪 30 / 必杀斧 30 / 必杀弓 30（游戏内必杀值）
+      final cat = ItemCatalog(_open(fe7jp));
+      for (final id in [13, 26, 36, 48]) {
+        final e = cat.entryAt(id)!;
+        expect(e.crit, 30, reason: 'item $id 的 +24');
+      }
+      // 普通铁剑/铁枪/铁斧/铁弓的必杀都是 0
+      for (final id in [1, 20, 31, 44]) {
+        expect(cat.entryAt(id)!.crit, 0, reason: 'item $id 的 +24');
+      }
+    });
+
+    test('FE7J 银枪：耐久20 × 单价60 = 售价1200', () {
+      final cat = ItemCatalog(_open(fe7jp));
+      final e = cat.entryAt(23)!;
+      expect(e.durability, 20);
+      expect(e.unitPrice, 60);
+      expect(e.durability * e.unitPrice, 1200);
+    });
+
+    test('道具表不再存在「回避」字段', () {
+      // 回避由速度/幸运算出，道具表里没有；+26 是单价。
+      final cat = ItemCatalog(_open(fe7jp));
+      final e = cat.entryAt(1)!;
+      expect(e.unitPrice, greaterThan(0));
+    });
+
+    test('单价是 u16：覇者の証 50000，只读 u8 会得到 80', () {
+      // bmitem.h：`/* 1A */ u16 costPerUse;`。
+      // FE7J 里有 54 个道具的单价超过 255，按 u8 读只会拿到低字节，
+      // 界面上的「商店售价」会小数百倍。
+      final rom = _open(fe7jp);
+      final cat = ItemCatalog(rom);
+      final e = cat.entryAt(150)!;
+      expect(e.unitPrice, 50000);
+      expect(e.durability * e.unitPrice, 50000);
+      // 低于 256 的道具不受影响，可以拿来对照
+      expect(cat.entryAt(1)!.unitPrice, 10);
     });
 
     test('射程码解码', () {
@@ -252,8 +313,8 @@ void main() {
     });
   });
 
-  group('有效职业列表', () {
-    test('弓的 +16 指向一份职业 ID 列表', () {
+  group('克制职业列表', () {
+    test('弓的 +16 指向一份克制职业 ID 列表（该武器对其有额外伤害）', () {
       final rom = _open(fe7jp);
       final cat = ItemCatalog(rom);
       final bows = cat.grouped()[ItemGroup.weapon]!
@@ -289,22 +350,39 @@ void main() {
       };
       for (final e in cat.grouped()[ItemGroup.weapon]!) {
         if (!equippableKinds.contains(e.kind)) continue;
-        expect(e.flags.equippable, isTrue, reason: 'item ${e.id} ${e.kind.label}');
+        expect(e.flags.weapon, isTrue, reason: 'item ${e.id} ${e.kind.label}');
       }
     });
 
-    test('杖是消耗型武器：bit0=0 但 bit2=1', () {
-      // 实测 FE7J 的 15 个杖（type=0x04）+8 都是 0x04：
-      // 不占装备位（bit0=0），但用后消失（bit2=1）。
+    test('杖是消耗型武器：attributes 的 bit2（IA_STAFF）置位，bit0 不置位', () {
+      // 实测 FE7J 的 15 个杖（type=0x04）attributes 都是 0x00000004：
+      // 不占装备位（bit0=0），但 bit2 标记它是杖。
       final rom = _open(fe7jp);
       final cat = ItemCatalog(rom);
       final staves =
           cat.grouped()[ItemGroup.weapon]!.where((e) => e.kind == ItemKind.staff).toList();
       expect(staves, isNotEmpty);
       for (final e in staves) {
-        expect(e.flags.equippable, isFalse, reason: 'item ${e.id}');
-        expect(e.flags.vanishAfterUse, isTrue, reason: 'item ${e.id}');
+        expect(e.flags.weapon, isFalse, reason: 'item ${e.id}');
+        expect(e.flags.staff, isTrue, reason: 'item ${e.id}');
       }
+    });
+
+    test('attributes 是 u32：勇者系 bit5 连击，bit8 逆转武器三角', () {
+      final cat = ItemCatalog(_open(fe7jp));
+      // FE7J：勇者剑 11 / 勇者枪 25 / 勇者斧 35 / 勇者弓 49
+      for (final id in [11, 25, 35, 49]) {
+        expect(cat.entryAt(id)!.flags.brave, isTrue, reason: 'item $id 应为勇者系');
+      }
+      expect(cat.entryAt(1)!.flags.brave, isFalse, reason: '铁剑不是勇者系');
+      // FE7J：ランスバスター 18 / アクスバスター 30 / ソードバスター 42 /
+      // ソードキラー 43——这三类「克武器」的武器带 bit8。
+      for (final id in [18, 30, 42, 43]) {
+        expect(cat.entryAt(id)!.flags.reverseTriangle, isTrue, reason: 'item $id');
+      }
+      expect(cat.entryAt(1)!.flags.reverseTriangle, isFalse, reason: '铁剑不是克武器');
+      // 这个位在 u32 的第 8 位上，只读 u8 是永远读不出来的
+      expect(cat.entryAt(18)!.flags.raw & 0x100, 0x100);
     });
 
     test('ID 0 是空槽，不应出现在任何分组里', () {
@@ -323,7 +401,7 @@ void main() {
       final consumables = cat.grouped()[ItemGroup.consumable]!;
       var notEquippable = 0;
       for (final e in consumables) {
-        if (!e.flags.equippable) notEquippable++;
+        if (!e.flags.weapon) notEquippable++;
       }
       expect(notEquippable, greaterThan(0));
     });

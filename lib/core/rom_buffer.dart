@@ -21,7 +21,10 @@ class RomBuffer {
 
   int u32(int a) {
     if (!inRange(a, 4)) return 0;
-    return data[a] | (data[a + 1] << 8) | (data[a + 2] << 16) | (data[a + 3] << 24);
+    return data[a] |
+        (data[a + 1] << 8) |
+        (data[a + 2] << 16) |
+        (data[a + 3] << 24);
   }
 
   /// 有符号 8 位（成长率、修正值可能是负数）
@@ -58,7 +61,8 @@ class RomBuffer {
   /// 返回区域起始偏移；找不到返回 -1。
   ///
   /// FE 的空位通常是 0xFF（擦除态）或 0x00，按 [fills] 顺序依次尝试。
-  int findFreeSpace(int size, {int start = 0, int? end, List<int> fills = const [0xFF, 0x00]}) {
+  int findFreeSpace(int size,
+      {int start = 0, int? end, List<int> fills = const [0xFF, 0x00]}) {
     final limit = end ?? data.length;
     if (size <= 0) return -1;
     for (final fill in fills) {

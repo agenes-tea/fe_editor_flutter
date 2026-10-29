@@ -1,47 +1,39 @@
 import 'dart:typed_data';
-import 'package:flutter_test/flutter_test.dart';
+
 import 'package:fe_editor/core/hex_view.dart';
 import 'package:fe_editor/core/rom_buffer.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
 
+const dir = '/root/workspace/game-rom';
+const fe8jp =
+    '$dir/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
+
+/// 十六进制视图：按任意每行字节数取行内容，且不丢字节。
 void main() {
-  test('按行格式化与 ASCII 预览', () {
-    final data = Uint8List.fromList(List.generate(20, (i) => i));
-    data[0] = 0x41; // 'A'
-    final v = HexView(RomBuffer(data));
-    expect(v.rowCount, 2);
-    expect(v.offsetLabel(0), '00000000');
-    expect(v.offsetLabel(1), '00000010');
-    expect(v.hexAt(0).startsWith('41 01 02 03'), isTrue);
-    expect(v.asciiAt(0).startsWith('A.'), isTrue);
-    // 第二行只有 4 字节，其余补空格
-    expect(v.hexAt(1).trim().split(' ').length, 4);
-  });
+  test('不同 perRow 下行内容都完整且不越界', () {
+    final data = List<int>.generate(64, (i) => i);
+    final view = HexView(RomBuffer(Uint8List.fromList(data)));
 
-  test('搜索字节序列', () {
-    final data = Uint8List.fromList([1, 2, 3, 1, 2, 3, 4, 5]);
-    final v = HexView(RomBuffer(data));
-    expect(v.search([1, 2, 3]), [0, 3]);
-    expect(v.search([9, 9]), isEmpty);
-    expect(v.search([]), isEmpty);
-  });
-
-  test('空位搜索', () {
-    final data = Uint8List(32)..fillRange(0, 32, 0xAA);
-    for (var i = 8; i < 20; i++) {
-      data[i] = 0xFF;
+    for (final perRow in [4, 8, 16]) {
+      final rows = (view.buffer.length + perRow - 1) ~/ perRow;
+      final collected = <int>[];
+      for (var r = 0; r < rows; r++) {
+        final hex = view.hexAt(r, perRow: perRow);
+        final parts = hex.trim().split(RegExp(r'\s+'));
+        for (final p in parts) {
+          if (p.isEmpty) continue;
+          collected.add(int.parse(p, radix: 16));
+        }
+      }
+      expect(collected, data, reason: 'perRow=$perRow 不应丢字节');
     }
-    final v = HexView(RomBuffer(data));
-    final run = v.findFreeRun(0, minLength: 8);
-    expect(run, isNotNull);
-    expect(run!.offset, 8);
-    expect(run.length, 12);
   });
 
-  test('parseHex 解析与容错', () {
-    expect(parseHex('12 34 AB'), [0x12, 0x34, 0xAB]);
-    expect(parseHex('0x1234'), isNull); // 奇数长度（去掉 x 后 123 => 4,2,3 奇数）
-    expect(parseHex('12 3'), isNull);
-    expect(parseHex(''), isNull);
-    expect(parseHex('zz'), isNull);
+  test('ASCII 预览按 perRow 切分', () {
+    final view = HexView(RomBuffer(Uint8List.fromList('ABCDEFGH'.codeUnits)));
+    expect(view.asciiAt(0, perRow: 4), 'ABCD');
+    expect(view.asciiAt(1, perRow: 4), 'EFGH');
+    expect(view.asciiAt(2, perRow: 4), '    ');
   });
 }

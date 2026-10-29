@@ -38,7 +38,8 @@ class ZhTable {
       if (encoded == assetKey) rethrow;
       data = await rootBundle.load(encoded);
     }
-    final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    final bytes =
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     return parse(utf8.decode(bytes, allowMalformed: true));
   }
 

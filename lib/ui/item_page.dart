@@ -2,6 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../core/editable_rom.dart';
 import '../core/item_catalog.dart';
+import '../core/item_flags.dart';
+import '../core/item_icon.dart';
+import '../core/rom_info.dart';
+import '../core/tile_image.dart';
+import 'text_edit_dialog.dart';
+import 'unit_page.dart';
 
 /// 道具浏览页：按大类分组，可按种类筛选，点进去看详情。
 class ItemListPage extends StatefulWidget {
@@ -13,7 +19,7 @@ class ItemListPage extends StatefulWidget {
 }
 
 class _ItemListPageState extends State<ItemListPage> {
-  late final ItemCatalog _catalog = ItemCatalog(widget.edit.rom);
+  late final ItemCatalog _catalog = ItemCatalog(widget.edit.liveRom);
   ItemKind? _filter;
   String _query = '';
 
@@ -37,7 +43,7 @@ class _ItemListPageState extends State<ItemListPage> {
                 child: TextField(
                   decoration: const InputDecoration(
                     isDense: true,
-                    hintText: '搜索道具名',
+                    hintText: '搜索道具名 / ID',
                     prefixIcon: Icon(Icons.search, size: 20),
                     border: OutlineInputBorder(),
                   ),
@@ -50,10 +56,12 @@ class _ItemListPageState extends State<ItemListPage> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   children: [
-                    _chip('全部', _filter == null, () => setState(() => _filter = null)),
+                    _chip('全部', _filter == null,
+                        () => setState(() => _filter = null)),
                     for (final k in ItemKind.values)
                       if (k != ItemKind.unknown)
-                        _chip(k.label, _filter == k, () => setState(() => _filter = k)),
+                        _chip(k.label, _filter == k,
+                            () => setState(() => _filter = k)),
                   ],
                 ),
               ),
@@ -103,11 +111,20 @@ class _ItemListPageState extends State<ItemListPage> {
         for (final e in shown)
           ListTile(
             dense: true,
-            leading: CircleAvatar(
-              radius: 14,
-              child: Text(
-                '${e.id}',
-                style: const TextStyle(fontSize: 11),
+            // 名称左边是游戏里的 16×16 小图标；取不到就退回 ID 数字
+            leading: SizedBox(
+              width: 32,
+              height: 32,
+              child: Center(
+                child: ItemIconView(
+                  rom: widget.edit.rom,
+                  iconId: e.iconId,
+                  size: 28,
+                  fallback: Text(
+                    '${e.id}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
               ),
             ),
             title: Text(
@@ -124,9 +141,13 @@ class _ItemListPageState extends State<ItemListPage> {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (_) => ItemDetailPage(catalog: _catalog, entry: e),
+                builder: (_) => ItemDetailPage(
+                  catalog: _catalog,
+                  entry: e,
+                  edit: widget.edit,
+                ),
               ),
-            ),
+            ).then((_) => setState(() {})),
           ),
       ],
     );
@@ -135,16 +156,17 @@ class _ItemListPageState extends State<ItemListPage> {
   bool _match(ItemEntry e) {
     if (_query.isEmpty) return true;
     final name = _catalog.nameOf(e.id);
-    return name.contains(_query);
+    if (name.contains(_query)) return true;
+    // 数字输入按 ID 匹配：名字搜不到时可以直接用 ID 定位
+    final asId = int.tryParse(_query);
+    return asId != null && e.id == asId;
   }
 
   String _subtitle(ItemEntry e) {
     final parts = <String>['ID ${e.id}', e.kind.label];
     if (e.hasDurability) parts.add('次数 ${e.durability}');
-    if (_catalog.hasWeaponRank) {
-      final r = e.weaponRank;
-      if (r != WeaponRank.none) parts.add('等级 ${r.label}');
-    }
+    final r = e.weaponRank;
+    if (r != WeaponRank.none) parts.add('等级 ${r.label}');
     if (e.kind.group == ItemGroup.weapon) {
       parts.add(e.range.label);
     }
@@ -152,34 +174,67 @@ class _ItemListPageState extends State<ItemListPage> {
   }
 }
 
-/// 道具详情页。
-class ItemDetailPage extends StatelessWidget {
+/// 道具详情页：只读信息 + 可编辑字段。
+class ItemDetailPage extends StatefulWidget {
   final ItemCatalog catalog;
   final ItemEntry entry;
+  final EditableRom edit;
 
   const ItemDetailPage({
     super.key,
     required this.catalog,
     required this.entry,
+    required this.edit,
   });
 
   @override
+  State<ItemDetailPage> createState() => _ItemDetailPageState();
+}
+
+class _ItemDetailPageState extends State<ItemDetailPage> {
+  bool get _canEdit => versionSupportsEditing(widget.edit.rom.table.id);
+
+  @override
   Widget build(BuildContext context) {
-    final rom = catalog.rom;
-    final bonuses = catalog.statBonuses(entry);
-    final classes = catalog.usableClasses(entry);
+    final rom = widget.catalog.rom;
+    final bonuses = widget.catalog.statBonuses(widget.entry);
+    final classes = widget.catalog.usableClasses(widget.entry);
+    final entry = widget.entry;
+    final fields = itemEditableFieldsFor(fe6: rom.isFe6);
+    // 特性位可编辑，顶部信息卡与勾选区都要读实时 buffer，而不是构造时的快照
+    final itemAddr = widget.edit.itemAddress(entry.id);
+    final liveFlags = ItemFlags.fromRaw(
+        widget.edit.buffer.u32(itemAddr + ItemOffsets.attributes));
 
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          catalog.nameOf(entry.id).trim().isEmpty
+          widget.catalog.nameOf(entry.id).trim().isEmpty
               ? '道具 ${entry.id}'
-              : catalog.nameOf(entry.id).trim(),
+              : widget.catalog.nameOf(entry.id).trim(),
         ),
+        actions: [
+          if (_canEdit)
+            IconButton(
+              icon: const Icon(Icons.drive_file_rename_outline),
+              tooltip: '改道具名',
+              onPressed: () => _rename(itemAddr),
+            ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // 顶部放图标原件（16×16 放大 3 倍），方便核对是哪个道具
+          Center(
+            child: ItemIconView(
+              rom: rom,
+              iconId: entry.iconId,
+              size: 72,
+              fallback: const SizedBox.shrink(),
+            ),
+          ),
+          const SizedBox(height: 8),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -188,24 +243,16 @@ class ItemDetailPage extends StatelessWidget {
                 children: [
                   _row('道具 ID', '${entry.id}'),
                   _row('种类', entry.kind.label),
-                  _row('可装备', entry.flags.equippable ? '是' : '否'),
-                  if (entry.flags.vanishAfterUse) _row('使用后消失', '是'),
-                  if (entry.flags.uniqueWeapon) _row('专用武器', '是'),
-                  if (entry.flags.noDrop) _row('不可丢弃', '是'),
-                  if (entry.hasDurability) _row('使用次数 / 耐久', '${entry.durability}'),
-                  if (entry.kind.group == ItemGroup.weapon) ...[
-                    _row('重量', '${entry.weight}'),
-                    _row('命中', '${entry.hit}'),
-                    _row('威力', '${entry.might}'),
-                    _row('助', '${entry.assist}'),
-                    _row('回避', '${entry.avoid}'),
-                    _row('射程', entry.range.label),
-                    if (catalog.hasWeaponRank) ...[
-                      _row('武器等级', entry.weaponRank.label),
-                      _row('熟练度累计值',
-                          '0x${entry.weaponRankValue.toRadixString(16).toUpperCase()}'),
-                    ],
-                  ],
+                  _row('可装备', liveFlags.weapon ? '是' : '否'),
+                  if (liveFlags.setFlags.isNotEmpty)
+                    _row('特性', liveFlags.setFlags.join(' · ')),
+                  if (entry.useEffectId != 0)
+                    _row('使用效果', '效果 ${entry.useEffectId}'),
+                  if (entry.weaponEffectId != 0)
+                    _row('武器特效', entry.weaponEffectLabel),
+                  if (entry.weaponExp != 0) _row('武器经验', '${entry.weaponExp}'),
+                  if (entry.hasDurability)
+                    _row('商店售价', '${entry.durability * entry.unitPrice}'),
                   _row('图标 ID', '${entry.iconId}'),
                   _row('表地址', '0x${entry.address.toRadixString(16)}'),
                 ],
@@ -213,8 +260,19 @@ class ItemDetailPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
+          sectionTitle(context, '可编辑字段'),
+          FieldGroupCard(
+            fields: fields,
+            addr: widget.edit.itemAddress(entry.id),
+            edit: widget.edit,
+            readOnly: !_canEdit,
+            onChanged: () => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          _itemFlagsCard(itemAddr),
+          const SizedBox(height: 12),
           if (!bonuses.isEmpty) ...[
-            _section(context, '数值加成'),
+            _section(context, '数值加成（只读）'),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -230,7 +288,7 @@ class ItemDetailPage extends StatelessWidget {
             const SizedBox(height: 12),
           ],
           if (classes.isNotEmpty) ...[
-            _section(context, '可使用职业（${classes.length}）'),
+            _section(context, '克制职业（${classes.length}，只读）'),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -239,12 +297,26 @@ class ItemDetailPage extends StatelessWidget {
                   runSpacing: 4,
                   children: [
                     for (final cid in classes)
-                      Chip(
+                      ActionChip(
                         label: Text(
                           _className(rom, cid),
                           style: const TextStyle(fontSize: 11),
                         ),
                         visualDensity: VisualDensity.compact,
+                        tooltip: cid > 0 && cid < rom.classCount
+                            ? '查看职业 $cid'
+                            : null,
+                        onPressed: cid > 0 && cid < rom.classCount
+                            ? () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => ClassEditPage(
+                                      edit: widget.edit,
+                                      index: cid,
+                                    ),
+                                  ),
+                                )
+                            : null,
                       ),
                   ],
                 ),
@@ -259,21 +331,77 @@ class ItemDetailPage extends StatelessWidget {
   }
 
   static String _className(dynamic rom, int cid) {
-    final n = rom.className(cid).trim();
+    final n = rom.classDisplayName(cid).trim();
     return n.isEmpty ? '职业 $cid' : n;
   }
 
-  Widget _section(BuildContext context, String t) => Padding(
-        padding: const EdgeInsets.only(bottom: 6, left: 4),
-        child: Text(
-          t,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.bold,
-            color: Theme.of(context).colorScheme.primary,
+  Future<void> _rename(int itemAddr) async {
+    final textId = widget.edit.buffer.u16(itemAddr + ItemOffsets.nameTextId);
+    final changed = await showTextEditDialog(
+      context,
+      edit: widget.edit,
+      textId: textId,
+      title: '改道具名',
+    );
+    if (changed && mounted) setState(() {});
+  }
+
+  /// 特性位（IA_*）开关：道具表 `attributes` u32@+8，按位写。
+  ///
+  /// 与职业 CA_* 区同一套写法：勾选/取消都走 [EditableRom.writeFlagBit]，
+  /// 只动这一位、其余位原样保留，改完点右上角「撤销全部」复原。
+  /// 把某把武器的特性（连击 / 逆转武器三角 / 无视防御 / 无限耐久…）
+  /// 复制给别的武器就靠这里。位定义与不开放 bit0/1/2 的原因见 [ItemFlagToggles]。
+  Widget _itemFlagsCard(int itemAddr) {
+    final states = ItemFlagToggles.current(widget.edit, itemAddr);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sectionTitle(context, '特性（IA_* 标志位）'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Column(
+              children: [
+                for (var i = 0; i < ItemFlagToggles.toggles.length; i++)
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      '${ItemFlagToggles.toggles[i].$2}  (${ItemFlagToggles.toggles[i].$3})',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    value: states[i],
+                    onChanged: !_canEdit
+                        ? null
+                        : (v) {
+                            if (v == null) return;
+                            if (widget.edit.writeFlagBit(
+                              itemAddr + ItemOffsets.attributes,
+                              ItemFlagToggles.toggles[i].$1,
+                              v,
+                            )) {
+                              setState(() {});
+                            }
+                          },
+                  ),
+              ],
+            ),
           ),
         ),
-      );
+        const Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Text(
+            '按位写，不影响其它位；勾「无限耐久」= 本道具游戏里永不损坏（同修改器预设），'
+            '改完可点右上角「撤销全部」复原。',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _section(BuildContext context, String t) => sectionTitle(context, t);
 
   Widget _row(String k, String v) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
@@ -296,12 +424,17 @@ class ItemDetailPage extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: Colors.blueGrey.shade200),
         ),
-        child: const Text(
+        child: Text(
           '说明：\n'
           '「使用次数 / 耐久」就是游戏里显示的 46/46 的分母。\n'
           '「威力」是武器自身的攻击力，游戏里的「攻击」= 角色力量 + 威力。\n'
-          '「命中」「重量」「助」「回避」都是武器自身数值。\n'
-          '上面显示的数值都是表里的真实数据。',
+          '「命中」「重量」「必杀」都是武器自身数值。\n'
+          '「单价」是 u16 字段，商店售价 = 单价 × 耐久（铁剑 10×46 = 460）。\n'
+          '「射程」存的是两个半字节（高=最小、低=最大），只能在游戏认识的组合里选。\n'
+          '「特性」是 item 表 +8 的 u32 attributes，下方「特性（IA_* 标志位）」区可直接勾选，'
+          '勾选「无限耐久」即让本道具游戏里永不损坏；「连击两次」「无视防御」等可复制给别的武器。\n'
+          '「克制职业」：该武器对列出的职业有额外伤害效果（兵种克制），并非限制谁能装备。\n'
+          '「武器等级」是能装备它的最低熟练度等级，括号内是表里的累计值。',
           style: TextStyle(fontSize: 12, color: Colors.blueGrey),
         ),
       );

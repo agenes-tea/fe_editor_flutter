@@ -31,7 +31,10 @@ class RomProbe {
 
   int u32(int at) {
     if (at < 0 || at + 4 > data.length) return 0;
-    return data[at] | (data[at + 1] << 8) | (data[at + 2] << 16) | (data[at + 3] << 24);
+    return data[at] |
+        (data[at + 1] << 8) |
+        (data[at + 2] << 16) |
+        (data[at + 3] << 24);
   }
 
   /// GBA 指针（0x08xxxxxx..0x09xxxxxx）转文件偏移。

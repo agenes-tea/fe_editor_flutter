@@ -17,7 +17,8 @@ class UpsPatch {
     _appendValCode(out, source.length);
     _appendValCode(out, target.length);
 
-    final length = source.length > target.length ? source.length : target.length;
+    final length =
+        source.length > target.length ? source.length : target.length;
     var lastPoint = 0;
     var i = 0;
     while (i < length) {
@@ -72,7 +73,8 @@ class UpsPatch {
     i = dstSize.next;
 
     final out = Uint8List(dstSize.value);
-    final copyLen = source.length < dstSize.value ? source.length : dstSize.value;
+    final copyLen =
+        source.length < dstSize.value ? source.length : dstSize.value;
     out.setAll(0, source.sublist(0, copyLen));
 
     final end = patch.length - 12;
@@ -97,7 +99,8 @@ class UpsPatch {
   }
 
   /// 判断补丁是否适用于这份 ROM（也接受目标侧的反向补丁）。
-  static bool _crcMatches(Uint8List patch, Uint8List source, int srcCrc, int dstCrc) {
+  static bool _crcMatches(
+      Uint8List patch, Uint8List source, int srcCrc, int dstCrc) {
     final c = crc32(source);
     return c == srcCrc || c == dstCrc;
   }
@@ -211,7 +214,8 @@ class IpsPatch {
       }
       if (pos + 5 > patch.length) return null;
 
-      final offset = (patch[pos] << 16) | (patch[pos + 1] << 8) | patch[pos + 2];
+      final offset =
+          (patch[pos] << 16) | (patch[pos + 1] << 8) | patch[pos + 2];
       final len = (patch[pos + 3] << 8) | patch[pos + 4];
       pos += 5;
 

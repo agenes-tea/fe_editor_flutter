@@ -9,6 +9,7 @@ const jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(
 const us = '$dir/1235 - 火炎之纹章-烈火之剑 Fire Emblem(US)(Nintendo)(128Mb).gba';
 const fe7cn = '$dir/火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';
 const fe6cn = '$dir/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
+const fe6jp = '$dir/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba';
 
 void main() {
   test('FE7 日版：识别 + 文本解码', () async {
@@ -73,5 +74,25 @@ void main() {
     final fake = Uint8List(0x1000);
     fake.setAll(0xAC, [0x42, 0x50, 0x45, 0x45]); // BPEE = 绿宝石
     expect(FeRom.detectTable(fake), isNull);
+  });
+
+  // 封印之剑日版的文本里夹着大量 FE 控制码（0C 10 50 01 之类）。
+  // 健康度判定早期把这些控制码当坏字节，整片算下来只有 0.23，
+  // 于是 8MB 的日版 ROM 被误报成「未识别文本引擎」、角色与职业名全空。
+  test('FE6 日版：文本编码可识别且名字能解出', () async {
+    final data = await File(fe6jp).readAsBytes();
+    final table = FeRom.detectTable(data)!;
+    expect(table.id, 'FE6');
+    final rom = FeRom(data, table);
+    expect(rom.gameCode, 'AFEJ');
+    expect(rom.textAvailable, isTrue);
+    expect(rom.textEncodingHealthy, isTrue,
+        reason: '控制码不应拉低健康度（曾低到 0.23 导致判为 unknown）');
+    expect(rom.unitName(0), 'ロイ');
+    expect(rom.unitName(1), 'クラリーネ');
+    expect(rom.unitName(2), 'ファ');
+    expect(rom.className(1), 'ロード');
+    expect(rom.itemName(1), 'てつの剣');
+    expect(rom.itemName(3), 'はがねの剣');
   });
 }

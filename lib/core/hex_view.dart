@@ -17,25 +17,29 @@ class HexView {
   int rowOffset(int row) => row * bytesPerRow;
 
   /// 生成一行的十六进制表示（未使用的尾部用空格补齐）
-  String hexAt(int row) {
-    final start = rowOffset(row);
+  String hexAt(int row, {int perRow = bytesPerRow}) {
+    final start = row * perRow;
     final sb = StringBuffer();
-    for (var i = 0; i < bytesPerRow; i++) {
+    for (var i = 0; i < perRow; i++) {
       if (start + i < buffer.length) {
-        sb.write(buffer.u8(start + i).toRadixString(16).padLeft(2, '0').toUpperCase());
+        sb.write(buffer
+            .u8(start + i)
+            .toRadixString(16)
+            .padLeft(2, '0')
+            .toUpperCase());
       } else {
         sb.write('  ');
       }
-      if (i != bytesPerRow - 1) sb.write(' ');
+      if (i != perRow - 1) sb.write(' ');
     }
     return sb.toString();
   }
 
   /// 生成一行的 ASCII 预览（不可打印字符用 . 代替）
-  String asciiAt(int row) {
-    final start = rowOffset(row);
+  String asciiAt(int row, {int perRow = bytesPerRow}) {
+    final start = row * perRow;
     final sb = StringBuffer();
-    for (var i = 0; i < bytesPerRow; i++) {
+    for (var i = 0; i < perRow; i++) {
       if (start + i >= buffer.length) {
         sb.write(' ');
         continue;
@@ -76,7 +80,8 @@ class HexView {
   ///
   /// 返回的是连续区域的**完整长度**（不是到 minLength 为止），
   /// 便于界面如实展示可用空间。
-  ({int offset, int length})? findFreeRun(int from, {int fill = 0xFF, int minLength = 1}) {
+  ({int offset, int length})? findFreeRun(int from,
+      {int fill = 0xFF, int minLength = 1}) {
     var start = -1;
     for (var i = from; i < buffer.length; i++) {
       if (buffer.data[i] == fill) {
