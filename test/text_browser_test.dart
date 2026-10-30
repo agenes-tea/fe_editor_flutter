@@ -19,7 +19,6 @@ void main() {
     final rom = FeRom(data, FeRom.detectTable(data)!);
     final browser = TextBrowser(rom);
     final n = browser.maxId;
-    print('FE7J 文本条数: $n');
     expect(n, greaterThan(1000));
     var nonEmpty = 0;
     for (var i = 0; i < 100; i++) {

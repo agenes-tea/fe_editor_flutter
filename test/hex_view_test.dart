@@ -2,7 +2,6 @@ import 'dart:typed_data';
 
 import 'package:fe_editor/core/hex_view.dart';
 import 'package:fe_editor/core/rom_buffer.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const dir = '/root/workspace/game-rom';

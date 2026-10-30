@@ -1,4 +1,5 @@
 // 校验打了调试器补丁的 FE8 ROM：文本表完整、单位/职业/道具表仍可读。
+// ignore_for_file: avoid_print
 import 'dart:io';
 import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/rom_info.dart';
@@ -11,7 +12,9 @@ void check(String path) {
   final n = rom.unitCount;
   var empty = 0;
   for (var i = 0; i < n; i++) {
-    if (rom.unitName(i).isEmpty) empty++;
+    if (rom.unitName(i).isEmpty) {
+      empty++;
+    }
   }
   print('  empty unit names: $empty / $n');
   for (final i in [0, 1, 2]) {
@@ -22,5 +25,7 @@ void check(String path) {
 }
 
 void main(List<String> args) {
-  for (final p in args) check(p);
+  for (final p in args) {
+    check(p);
+  }
 }

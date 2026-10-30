@@ -496,8 +496,9 @@ class _HomePageState extends State<HomePage> {
       case FeTextEncoding.huffmanZhTbl:
         return '正常（中文·码表 ${rom.zhTable?.table.length ?? 0} 字）';
       case FeTextEncoding.unknown:
-        if (rom.zhTable != null)
+        if (rom.zhTable != null) {
           return '正常（中文·码表 ${rom.zhTable!.table.length} 字）';
+        }
         return '异常（改版文本引擎）';
     }
   }
@@ -1329,7 +1330,7 @@ class _TextBrowserPageState extends State<TextBrowserPage> {
   late final TextWriter _writer = TextWriter(widget.edit);
   late final TextBrowser _browser = TextBrowser(_writer.rom);
   final _filter = TextEditingController();
-  List<_TextRow> _rows = [];
+  final List<_TextRow> _rows = [];
   int _total = 0;
   bool _done = false;
 

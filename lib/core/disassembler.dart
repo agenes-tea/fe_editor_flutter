@@ -725,8 +725,9 @@ text: 'svc\t${h & 0xFF}',
         target: -1,
       );
       }
-      if (cond == 0xE) return (
-text: 'udf\t#${h & 0xFF}', target: -1);
+      if (cond == 0xE) {
+        return (text: 'udf\t#${h & 0xFF}', target: -1);
+      }
       var imm = h & 0xFF;
       if ((imm & 0x80) != 0) imm -= 0x100;
       final target = offset + 4 + imm * 2;

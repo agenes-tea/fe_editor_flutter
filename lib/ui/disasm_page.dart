@@ -167,7 +167,9 @@ class _DisasmPageState extends State<DisasmPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  '${node.returns ? '扫到返回指令，是一个完整函数' : '未扫到返回指令（可能被截断或不是函数入口）'}',
+                  node.returns
+                      ? '扫到返回指令，是一个完整函数'
+                      : '未扫到返回指令（可能被截断或不是函数入口）',
                   style: const TextStyle(fontSize: 12),
                 ),
                 const SizedBox(height: 10),

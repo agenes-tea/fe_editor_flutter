@@ -5,7 +5,6 @@ import '../core/item_catalog.dart';
 import '../core/item_flags.dart';
 import '../core/item_icon.dart';
 import '../core/rom_info.dart';
-import '../core/tile_image.dart';
 import 'text_edit_dialog.dart';
 import 'unit_page.dart';
 

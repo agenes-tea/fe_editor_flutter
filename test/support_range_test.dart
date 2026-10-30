@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/cheat_presets.dart';
 import 'package:fe_editor/core/editable_rom.dart';
 import 'package:fe_editor/core/fe_rom.dart';
-import 'package:fe_editor/core/rom_buffer.dart';
 import 'package:fe_editor/core/support_range.dart';
 
 const dir = '/root/workspace/game-rom';
@@ -81,7 +80,6 @@ void main() {
     final edit = EditableRom.open(data, table!);
     final at = SupportRange(edit.rom).locate();
     final preset = cheatPresets.firstWhere((p) => p.id == 'support_range_30');
-    final at2 = at;
     final res = applyCheat(edit, preset);
     if (at < 0) {
       expect(res.skipped, isNotEmpty);
