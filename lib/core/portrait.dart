@@ -417,6 +417,12 @@ class PortraitReader {
     return hasImage(id) ? id : null;
   }
 
+  /// 肖像 ID → 单位/职业表里的 `face` 字段值（[faceToPortraitId] 的反向）。
+  ///
+  /// 换脸时必须走它：FE6 的 face 是「肖像索引 + 1」，直接写肖像 ID
+  /// 会让整张表偏一格（详见 AGENTS 第 6 节）。
+  int portraitToFaceId(int id) => id == 0 ? 0 : id - _faceOffset;
+
   /// 反查使用该肖像的角色名（单位表优先，其次职业表）。
   String nameFor(int id) {
     final name = _unitNameForFace(id);
@@ -540,5 +546,89 @@ class PortraitReader {
     return null;
   }
 
+  /// 这张肖像是谁在用的（角色名 + 职业名），用于替换前看清影响面。
+  ///
+  /// 返回人类可读的一行，例如「艾利乌德（领主）· 还用于 2 个职业」；
+  /// 没人用返回空串。只查单位表的正脸字段与职业表的职业卡字段 —— 这两处是
+  /// 原版唯一的引用来源（章节单位、事件脚本都引用角色 ID，不直接引用肖像）。
+  String usageOf(int id) {
+    final unit = unitIndexForFace(id);
+    final cls = classIndexForFace(id);
+    final users = <String>[];
+    if (unit != null) {
+      final n = rom.unitDisplayName(unit).trim();
+      users.add(n.isEmpty ? '角色 $unit' : n);
+    }
+    if (cls != null) {
+      final n = rom.classDisplayName(cls).trim();
+      users.add(n.isEmpty ? '职业 $cls' : n);
+    }
+    return users.join(' / ');
+  }
+
   void dispose() => _sheetCache.clear();
+
+  // ---------- 原始索引（供跨版本移植用，不做像素重建） ----------
+  //
+  // 上面的 faceImage / mouthFrame 等都返回**上色后的像素**，而移植需要的是
+  // 4bpp 调色板索引本身——索引 0 在像素里是透明，反推不回来。所以这里直接
+  // 解出索引字节。
+
+  /// 正脸 sheet 的 4bpp 索引字节（每行 `256/2 = 128` 字节，每字节两像素）。
+  ///
+  /// 返回长度：FE6 = 4352（34 行），FE7/FE8 = 5120（40 行）。
+  /// 取不到返回 null。
+  Uint8List? faceIndices(int id) {
+    final e = entryAt(id);
+    if (e == null || e.unitFace <= 0) return null;
+    if (isFe6) {
+      final uz = Lz77.decompress(rom.data, e.unitFace);
+      if (uz == null || uz.isEmpty) return null;
+      // FE6 正脸是 256×34；个别改版/工具可能写成 40 行，多出来的截掉
+      const need = 256 * 34 ~/ 2;
+      return uz.length > need ? Uint8List.sublistView(uz, 0, need) : uz;
+    }
+    if (Lz77.isCompressed(rom.data, e.unitFace)) {
+      return Lz77.decompress(rom.data, e.unitFace);
+    }
+    // 明文：4 字节头 + 数据
+    final start = e.unitFace + 4;
+    final len = _isHalfBody(e.unitFace) ? 256 * 80 ~/ 2 : 256 * 40 ~/ 2;
+    if (start + len > rom.length) return null;
+    // 明文 sheet 也可能是 34 行（移植写回 FE6 时留了 34 行的 LZ77，
+    // 但改版可能直接放明文）；按实际可用长度截断，避免越界。
+    return Uint8List.sublistView(rom.data, start, start + len);
+  }
+
+  /// 嘴型图的 4bpp 索引字节（32×96，即 4 宽 × 6 帧）。FE6 没有独立嘴型数据，返回 null。
+  Uint8List? mouthIndices(int id) {
+    if (isFe6) return null;
+    final e = entryAt(id);
+    if (e == null || e.mouth <= 0 || !_valid(e.mouth)) return null;
+    const len = 32 * 96 ~/ 2;
+    if (e.mouth + len > rom.length) return null;
+    return Uint8List.sublistView(rom.data, e.mouth, e.mouth + len);
+  }
+
+  /// 地图头像的 4bpp 索引字节（32×32 = 512 字节）。
+  Uint8List? mapFaceIndices(int id) {
+    final e = entryAt(id);
+    if (e == null || e.mapFace <= 0 || !_valid(e.mapFace)) return null;
+    const len = 32 * 32 ~/ 2;
+    if (isFe6) {
+      if (e.mapFace + len > rom.length) return null;
+      return Uint8List.sublistView(rom.data, e.mapFace, e.mapFace + len);
+    }
+    final uz = Lz77.decompress(rom.data, e.mapFace);
+    if (uz == null || uz.length < len) return null;
+    return Uint8List.sublistView(uz, 0, len);
+  }
+
+  /// 调色板的 32 字节原始数据（16 色 BGR555）。
+  Uint8List? paletteBytes(int id) {
+    final e = entryAt(id);
+    if (e == null || e.palette <= 0 || !_valid(e.palette)) return null;
+    if (e.palette + 32 > rom.length) return null;
+    return Uint8List.sublistView(rom.data, e.palette, e.palette + 32);
+  }
 }

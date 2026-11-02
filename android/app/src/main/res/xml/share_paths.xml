@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 只开放缓存目录：「用模拟器打开」把改后的 ROM 暂存这里再分享 -->
+    <cache-path name="rom_share" path="." />
+</paths>

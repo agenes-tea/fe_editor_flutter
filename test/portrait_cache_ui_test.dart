@@ -18,23 +18,21 @@ EditableRom _edit(String path) {
 }
 
 void main() {
-  testWidgets('先开烈火再开封印：第二个 ROM 的角色页显示的是它自己的肖像', (tester) async {
-    // 1) 打开烈火之剑，渲染角色列表 → 触发肖像解码并写入缓存
+  testWidgets('两个 ROM 同时打开：各自页面都显示自己的肖像', (tester) async {
+    // 两份会话同时在内存里，不切换任何全局命名空间
     final fe7 = _edit(fe7jp);
-    PortraitImageCache.instance.bindRom(fe7.rom.fingerprint);
+    final fe6 = _edit(fe6cn);
+
     await tester.pumpWidget(MaterialApp(home: UnitListPage(edit: fe7)));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('エリウッド'), findsWidgets);
 
-    // 2) 换成封印之剑（真实流程：主页 _load 里 bindRom）
-    final fe6 = _edit(fe6cn);
-    PortraitImageCache.instance.bindRom(fe6.rom.fingerprint);
     await tester.pumpWidget(MaterialApp(home: UnitListPage(edit: fe6)));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    // 3) 两个 ROM 的同一肖像索引，解码出的像素不应相等
+    // 两个 ROM 的同一肖像索引，解码出的像素不应相等
     final r7 = PortraitReader(fe7.rom);
     final r6 = PortraitReader(fe6.rom);
     final f7 = r7.faceImage(2);
@@ -51,9 +49,8 @@ void main() {
   testWidgets('同一 ROM 内复用缓存 key 保持一致', (tester) async {
     final cache = PortraitImageCache.instance;
     final rom = _edit(fe7jp).rom;
-    cache.bindRom(rom.fingerprint);
-    final k1 = cache.keyFor(2, 1);
-    final k2 = cache.keyFor(2, 1);
+    final k1 = cache.keyFor(rom.fingerprint, 2, 1);
+    final k2 = cache.keyFor(rom.fingerprint, 2, 1);
     expect(k1, k2);
   });
 }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -7,34 +8,48 @@ import 'core/app_log.dart';
 import 'core/app_settings.dart';
 import 'core/app_meta.dart';
 import 'core/editable_rom.dart';
+import 'core/rom_session.dart';
+import 'core/mcp_service.dart';
+import 'core/rom_workspace.dart';
 import 'core/feature_flags.dart';
 import 'core/fe_rom.dart';
 import 'core/file_picker_service.dart';
+import 'core/external_workspace.dart';
 import 'core/hex_view.dart';
+import 'core/recipe.dart';
+import 'core/rom_health.dart';
 import 'ui/disasm_page.dart';
 import 'core/patch_format.dart';
+import 'core/patch_apply.dart';
 import 'core/text_browser.dart';
 import 'core/text_codec.dart';
 import 'core/text_writer.dart';
+import 'core/text_find_replace.dart';
 import 'ui/text_edit_dialog.dart';
-import 'core/zh_table.dart';
-import 'core/zh_tables_data.dart';
 import 'ui/about_page.dart';
 import 'ui/battle_anim_page.dart';
+import 'ui/battle_anim_port_page.dart';
 import 'ui/cheat_page.dart';
 import 'ui/item_page.dart';
 import 'ui/settings_page.dart';
+import 'ui/simulator_page.dart';
 import 'ui/log_page.dart';
 import 'ui/chapter_page.dart';
 import 'ui/portrait_page.dart';
+import 'ui/portrait_port_page.dart';
+import 'ui/health_page.dart';
+import 'ui/rom_session_bar.dart';
 import 'ui/table_address_page.dart';
 import 'ui/unit_page.dart';
+import 'ui/workspace_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 先装日志与未捕获异常钩子，再做别的
   AppLog.instance.install(version: appVersion);
   await AppSettings.instance.load();
+  // 外部工作区：目录授权跟着系统持久化，这里只把「上次选的目录」读回来
+  await ExternalWorkspace.instance.load();
   AppLog.instance.attachFile();
   runApp(const FeEditorApp());
 }
@@ -114,11 +129,56 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  String? _fileName;
-  EditableRom? _edit;
+  /// 已打开的 ROM 集合（可同时多个：跨版本移植要源/目标共存）。
+  final RomWorkspace _workspace = RomWorkspace();
+
   String? _error;
 
-  FeRom? get _rom => _edit?.rom;
+  RomSession? get _active => _workspace.active;
+
+  EditableRom? get _edit => _active?.rom;
+
+  String? get _fileName => _active?.fileName;
+
+  FeRom? get _rom => _active?.rom.rom;
+
+  @override
+  void initState() {
+    super.initState();
+    _workspace.addListener(_onWorkspace);
+    // MCP 请求随时可能到达（包括 App 在后台时），所以工作区一建好就绑定。
+    McpService.instance.install(_workspace);
+  }
+
+  @override
+  void dispose() {
+    _workspace.removeListener(_onWorkspace);
+    _workspace.dispose();
+    super.dispose();
+  }
+
+  void _onWorkspace() {
+    if (mounted) setState(() {});
+  }
+
+  /// 从外部工作区挑一个 ROM 打开。
+  ///
+  /// 工作区设好后这是最常用的入口：目录已授权，直接列文件点开，
+  /// 不再每次走系统文件选择器。
+  Future<void> _openFromWorkspace() async {
+    setState(() => _error = null);
+    final picked = await Navigator.push<WorkspaceRom>(
+      context,
+      MaterialPageRoute(builder: (_) => const WorkspacePage()),
+    );
+    if (picked == null) return;
+    final data = await ExternalWorkspace.instance.readRom(picked.name);
+    if (data == null) {
+      setState(() => _error = '读取工作区 ROM 失败：${picked.name}');
+      return;
+    }
+    await _open(data, picked.name);
+  }
 
   Future<void> _pickRom() async {
     setState(() => _error = null);
@@ -133,98 +193,89 @@ class _HomePageState extends State<HomePage> {
       } catch (_) {
         // 删除失败不影响已读入内存的 ROM
       }
-      await _load(data, path.split('/').last);
+      await _open(data, path.split('/').last);
     } catch (e) {
       AppLog.instance.log('error', '打开 ROM 失败: $e');
       setState(() => _error = '打开失败：$e');
     }
   }
 
-  Future<void> _load(Uint8List data, String name) async {
-    final table = FeRom.detectTable(data);
-    if (table == null) {
+  /// 打开一个 ROM。已经是打开状态的同一份 ROM 只切换过去，不重复占用内存。
+  Future<void> _open(Uint8List data, String name) async {
+    final before = _workspace.sessions.length;
+    final session = await _workspace.open(data, name);
+    if (session == null) {
       final code = data.length >= 0xB0
           ? String.fromCharCodes(data.sublist(0xAC, 0xB0))
           : '????';
       AppLog.instance
           .log('error', '无法识别 ROM $name code=$code size=${data.length}');
       setState(() {
-        _edit = null;
         _error = '无法识别此 ROM（game code: $code）。\n'
             '支持：封印之剑 FE6、烈火之剑 FE7（日/美）、圣魔之光石 FE8（日/美）。';
       });
       return;
     }
-    final edit = EditableRom.open(data, table);
-    await _maybeAttachZhTable(edit);
-    // 换 ROM 必须换缓存命名空间，否则新 ROM 会直接显示上一个 ROM 的肖像
-    PortraitImageCache.instance.bindRom(edit.rom.fingerprint);
+    if (_workspace.sessions.length == before) {
+      AppLog.instance.log('info', 'ROM $name 已打开，切换到该会话');
+      return;
+    }
     AppLog.instance.log(
         'info',
         '打开 ROM $name ${data.length}B '
-            'code=${edit.rom.gameCode} table=${table.id} text=${edit.rom.textEncoding}');
-    setState(() {
-      _edit = edit;
-      _fileName = name;
-      _error = null;
-    });
-  }
-
-  /// 汉化版若是「Huffman + 中文码表」（如狼组封印之剑），
-  /// 标准解码会失败；这里自动挂载对应 .tbl 并切换渲染方式。
-  Future<void> _maybeAttachZhTable(EditableRom edit) async {
-    final rom = edit.rom;
-    if (rom.textEncoding != FeTextEncoding.unknown) return;
-    final id = rom.table.id;
-    final Map<int, String>? embedded = switch (id) {
-      'FE6' => zhTblFE6,
-      'FE7J' || 'FE7U' => zhTblFE7,
-      'FE8J' || 'FE8U' => zhTblFE8,
-      _ => null,
-    };
-    if (embedded != null) {
-      final tbl = ZhTable(embedded);
-      rom.zhTable = tbl;
-      if (rom.zhTableMatchRatio() >= 0.5) return;
-      rom.zhTable = null;
-    }
-    // 兜底：尝试 assets（便于以后换表而不重新编译）
-    try {
-      final tbl = await ZhTable.loadFromAssets('assets/tbl/$id.tbl');
-      if (tbl == null) return;
-      rom.zhTable = tbl;
-      if (rom.zhTableMatchRatio() >= 0.5) return;
-      rom.zhTable = null;
-    } catch (_) {
-      // 没有码表，保持 unknown
-    }
+            'code=${session.liveRom.gameCode} table=${session.versionId} '
+            'text=${session.liveRom.textEncoding} 已打开 ${_workspace.sessions.length} 个');
   }
 
   @override
   Widget build(BuildContext context) {
-    final rom = _rom;
+    final session = _active;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('火纹改版工具'),
+        title: Text(session == null
+            ? '火纹改版工具'
+            : '火纹改版工具  ${session.versionId}'),
         actions: [
-          if (rom != null)
+          IconButton(
+            tooltip: ExternalWorkspace.instance.configured
+                ? '工作区（${ExternalWorkspace.instance.dir!.name}）'
+                : '外部工作区',
+            icon: const Icon(Icons.folder_special),
+            onPressed: _openFromWorkspace,
+          ),
+          IconButton(
+            tooltip: '打开另一个 ROM',
+            icon: const Icon(Icons.library_add),
+            onPressed: _pickRom,
+          ),
+          if (session != null)
             IconButton(
               tooltip: '导出',
               icon: const Icon(Icons.save_alt),
               onPressed: _showExportSheet,
             ),
-          if (rom != null)
+          if (session != null)
             IconButton(
-              tooltip: '关闭 ROM',
+              tooltip: '关闭当前 ROM',
               icon: const Icon(Icons.close),
-              onPressed: () => setState(() {
-                _edit = null;
-                _fileName = null;
-              }),
+              onPressed: () => _workspace.close(session),
             ),
         ],
       ),
-      body: rom == null ? _buildEmpty() : _buildLoaded(),
+      body: session == null ? _buildEmpty() : _buildLoaded(),
+    );
+  }
+
+  /// 会话切换栏：同时打开多个 ROM 时，在顶部列出每一个（点一下切过去）。
+  Widget _sessionBar() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: RomSessionBar(
+        sessions: _workspace.sessions,
+        activeId: _workspace.active?.id,
+        onSelect: _workspace.activate,
+        onClose: _workspace.close,
+      ),
     );
   }
 
@@ -246,6 +297,21 @@ class _HomePageState extends State<HomePage> {
               style: TextStyle(color: Colors.grey.shade600),
             ),
             const SizedBox(height: 24),
+            if (ExternalWorkspace.instance.configured) ...[
+              FilledButton.icon(
+                onPressed: _openFromWorkspace,
+                icon: const Icon(Icons.folder_special),
+                label: Text('从工作区打开（${ExternalWorkspace.instance.dir!.name}）'),
+              ),
+              const SizedBox(height: 8),
+            ] else ...[
+              FilledButton.icon(
+                onPressed: _openFromWorkspace,
+                icon: const Icon(Icons.folder_special),
+                label: const Text('设置工作区（以后不用每次选 ROM）'),
+              ),
+              const SizedBox(height: 8),
+            ],
             FilledButton.icon(
               onPressed: _pickRom,
               icon: const Icon(Icons.folder_open),
@@ -291,18 +357,20 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildLoaded() {
-    final edit = _edit!;
+    final session = _active!;
+    final edit = session.rom;
     final rom = edit.rom;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (_workspace.sessions.length > 1) _sessionBar(),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(_fileName ?? '',
+                Text(session.fileName,
                     style: const TextStyle(fontSize: 13, color: Colors.grey)),
                 const SizedBox(height: 8),
                 Text(rom.table.name,
@@ -396,6 +464,19 @@ class _HomePageState extends State<HomePage> {
               MaterialPageRoute(builder: (_) => PortraitListPage(edit: edit)),
             );
           }),
+          // 移植需要至少两个 ROM；只有一个时也给入口，页面里会提示
+          _tile('肖像移植', Icons.compare_arrows,
+              '把一张脸搬到另一个已打开的 ROM（跨版本自动转格式）', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PortraitPortPage(
+                  sessions: _workspace.sessions,
+                  current: session,
+                ),
+              ),
+            );
+          }),
           _tile('文本', Icons.article, 'ROM 内全部对话与字符串（含中文）', () {
             Navigator.push(
               context,
@@ -408,12 +489,30 @@ class _HomePageState extends State<HomePage> {
               MaterialPageRoute(builder: (_) => BattleAnimListPage(edit: edit)),
             );
           }),
+          _tile('动画移植', Icons.movie_filter,
+              '把一条战斗动画整包搬到另一个已打开的 ROM', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => BattleAnimPortPage(
+                  sessions: _workspace.sessions,
+                  current: session,
+                ),
+              ),
+            );
+          }),
         ]),
         _section('工具', [
           _tile('修改器', Icons.auto_fix_high, '全局角色强化等批量一键修改', () {
             Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => CheatListPage(edit: edit)),
+            ).then((_) => setState(() {}));
+          }),
+          _tile('模拟', Icons.show_chart, '成长曲线 / 战斗推演 / 改前 vs 改后', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => SimulatorPage(edit: edit)),
             ).then((_) => setState(() {}));
           }),
           _tile('十六进制', Icons.code, '按地址查看与修改任意字节、搜索', () {
@@ -455,6 +554,13 @@ class _HomePageState extends State<HomePage> {
               context,
               MaterialPageRoute(builder: (_) => const SettingsPage()),
             ).then((_) => setState(() {}));
+          }),
+          _tile('ROM 体检', Icons.health_and_safety_outlined,
+              '检查表结构、ID 连续性与章节单位是否越界', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => HealthPage(edit: edit)),
+            );
           }),
           _tile('日志', Icons.notes, '错误与操作记录，可复制发给我们排查', () {
             Navigator.push(
@@ -624,6 +730,33 @@ class _HomePageState extends State<HomePage> {
                 _exportPatch(edit, ups: false);
               },
             ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add_check),
+              title: const Text('导入配方'),
+              subtitle: const Text('应用别人或 AI 导出的修改配方，应用后自动体检'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _importRecipe(edit);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.healing_outlined),
+              title: const Text('应用补丁'),
+              subtitle: const Text('导入 .ips/.ups 补丁文件（需针对这份原版 ROM 生成）'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _applyPatch(edit);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.play_circle_outline),
+              title: const Text('用模拟器打开'),
+              subtitle: const Text('分享改后的 GBA，选 mGBA 等模拟器直接看效果'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _shareToEmulator(edit);
+              },
+            ),
           ],
         ),
       ),
@@ -723,6 +856,290 @@ class _HomePageState extends State<HomePage> {
       if (mounted) _toast('导出失败：$e');
       return null;
     }
+  }
+
+  /// 应用补丁：选 .ips/.ups → 对原版快照应用 → 确认后按差异区写回 buffer →
+  /// 自动浅体检。补丁必须针对**未改动的原版 ROM** 生成：会话里有未保存
+  /// 改动时直接拒绝（改了再打补丁，两层改动会互相覆盖）。
+  Future<void> _applyPatch(EditableRom edit) async {
+    final path = await pickPatchFile();
+    if (!mounted) return;
+    if (path == null) {
+      _toast('未应用：已取消选择');
+      return;
+    }
+    List<int> patchBytes;
+    try {
+      patchBytes = File(path).readAsBytesSync();
+    } catch (e) {
+      _toast('读补丁文件失败：$e');
+      return;
+    }
+    if (edit.hasChanges) {
+      _toast('会话里有未保存的改动：先「撤销全部修改」再打补丁'
+          '（补丁是针对原版 ROM 生成的）');
+      return;
+    }
+    final result = applyPatch(Uint8List.fromList(patchBytes), edit.original);
+    if (!mounted) return;
+    if (!result.ok) {
+      AppLog.instance.log('warn', '补丁应用失败：${result.message}');
+      _toast(result.message);
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('应用 ${result.kind} 补丁？'),
+        content: Text(
+          '将改动 ${result.changedBytes} 字节。\n'
+          '写入后可用顶栏「撤销全部修改」整体还原；'
+          '应用后会自动跑一次浅体检。',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('应用')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    // 按连续差异区写回 buffer（每字节都记进 edits，可整体撤销）
+    final a = edit.original;
+    final b = result.newRom!;
+    var i = 0;
+    var regions = 0;
+    while (i < a.length) {
+      if (a[i] == b[i]) {
+        i++;
+        continue;
+      }
+      final start = i;
+      while (i < a.length && a[i] != b[i]) i++;
+      edit.writeBytes(start, b.sublist(start, i));
+      regions++;
+    }
+    final report = RomHealth(edit).run(deep: false);
+    AppLog.instance.log(
+        'info', '应用${result.kind}补丁：${result.changedBytes}B / $regions 个差异区');
+    if (!mounted) return;
+    setState(() {});
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(report.ok ? '补丁已应用' : '补丁已应用（体检有问题）'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${result.kind} 补丁，改动 ${result.changedBytes} 字节'),
+              if (report.ok)
+                const Text('自动体检：未发现问题')
+              else
+                Text('自动体检：${report.errorCount} 处问题、'
+                    '${report.warningCount} 处警告'),
+              Text('不满意可顶栏「撤销全部修改」整体还原（补丁写入也是一次编辑）。',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              if (mounted) {
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => HealthPage(edit: edit)));
+              }
+            },
+            child: const Text('看完整体检'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('好'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 「用模拟器打开」：把当前（改后）ROM 分享到系统，让用户选模拟器（mGBA 等）
+  /// 直接打开看效果。不集成模拟器引擎——那是另一量级的工程；
+  /// 分享面板是「改完立刻看」最短的一跳。
+  Future<void> _shareToEmulator(EditableRom edit) async {
+    final base = (_fileName ?? 'rom.gba')
+        .replaceAll(RegExp(r'\.gba$', caseSensitive: false), '');
+    final err = await shareGbaRom('${base}_modified.gba', edit.data);
+    if (!mounted) return;
+    if (err == null) {
+      AppLog.instance.log('info', '分享 ROM 给模拟器 ${edit.data.length}B');
+      _toast('已分享，请在面板里选一个模拟器（如 mGBA）打开');
+    } else {
+      _toast(err);
+    }
+  }
+
+  /// 导入配方：选配方 JSON → 预览 → 快照 → 应用 → 自动浅体检。
+  ///
+  /// 配方两层：语义层（预设/字段，按名字重新解析，同版本可用）与
+  /// 字节层（chunks，指纹一致才重放，原值对不上的分段逐条跳过）。
+  /// 应用前快照，结果弹窗里可一键回退。
+  Future<void> _importRecipe(EditableRom edit) async {
+    final text = await pickRecipeFile();
+    if (!mounted) return;
+    if (text == null) {
+      _toast('未应用：已取消选择');
+      return;
+    }
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(text);
+    } catch (_) {
+      AppLog.instance.log('warn', '配方导入失败：不是合法 JSON');
+      _toast('配方文件不是合法 JSON');
+      return;
+    }
+    if (decoded is! Map) {
+      _toast('配方文件格式错：顶层必须是 JSON 对象');
+      return;
+    }
+    final session = _active;
+    if (session == null) return;
+
+    final romInfo = (decoded['rom'] as Map?)?.cast<String, Object?>();
+    final version = romInfo?['version']?.toString();
+    final fingerprint = (romInfo?['fingerprint'] as num?)?.toInt();
+    final chunks = [
+      for (final c in (decoded['chunks'] as List?) ?? const <Object>[])
+        (c as Map).cast<String, Object?>(),
+    ];
+    final parsed = parseSemantic(decoded['semantic']);
+
+    final versionOk = version == null || version == session.versionId;
+    final fpOk = fingerprint == null || fingerprint == session.fingerprint;
+
+    // 预览与确认
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入配方'),
+        content: SingleChildScrollView(
+          child: Text(
+            '来源：${version ?? '未知版本'}'
+            '${romInfo?['file'] == null ? '' : ' / ${romInfo!['file']}'}\n'
+            '字节层：${chunks.length} 段${fpOk ? '' : '（指纹不一致，全部跳过）'}\n'
+            '语义层：${_describeSemantic(parsed)}'
+            '${parsed.problems.isEmpty ? '' : '\n注意：${parsed.problems.join('；')}'}'
+            '${versionOk ? '' : '\n版本不匹配（$version ≠ ${session.versionId}），会被拒绝'}',
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            onPressed: versionOk ? () => Navigator.pop(ctx, true) : null,
+            child: const Text('应用'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    // 应用前快照，结果弹窗里可一键回退
+    final snap = session.snapshots.take(edit, label: 'import_recipe');
+    final result = applyRecipe(
+      edit,
+      semantic: parsed.hasContent ? parsed : null,
+      chunks: chunks,
+      version: version,
+      expectedFingerprint: fingerprint,
+    );
+    // 自动浅体检（跳过耗时的大地图/事件扫描）
+    final report = RomHealth(edit).run(deep: false);
+    AppLog.instance.log(
+        'info',
+        '应用配方：语义层 ${result.semanticChangedBytes}B / '
+        '字节层 ${result.bytesChangedBytes}B / 跳过 ${result.skippedChunks} 段');
+    if (!mounted) return;
+    setState(() {});
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(result.problems.isEmpty ? '配方已应用' : '配方已应用（有问题）'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('改动 ${result.totalChangedBytes} 字节'
+                  '（语义 ${result.semanticChangedBytes} / 字节 ${result.bytesChangedBytes}）'),
+              if (report.ok)
+                const Text('自动体检：未发现问题')
+              else
+                Text('自动体检：${report.errorCount} 处问题、'
+                    '${report.warningCount} 处警告'),
+              for (final p in result.problems) Text('· $p'),
+              for (final p in parsed.problems) Text('· $p'),
+              Text('不满意可点「回退本次导入」',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              session.snapshots.restore(edit, snap);
+              Navigator.pop(ctx);
+            },
+            child: const Text('回退本次导入'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              if (mounted) {
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => HealthPage(edit: edit)));
+              }
+            },
+            child: const Text('看完整体检'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('好'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 预览弹窗里对语义层的一句话描述。
+  String _describeSemantic(ParsedRecipe p) {
+    if (!p.hasContent) return '无';
+    final parts = <String>[];
+    for (final x in p.semantic['presets'] as List? ?? const <Object>[]) {
+      final m = x as Map;
+      final targets = m['targets'];
+      parts.add('预设「${m['id']}」${targets == null ? '' : '→ $targets'}');
+    }
+    for (final key in const ['units', 'items', 'classes']) {
+      final entries = p.semantic[key] as Map?;
+      if (entries != null && entries.isNotEmpty) {
+        parts.add('$key ${entries.length} 个目标的字段修改');
+      }
+    }
+    return parts.isEmpty ? '无' : parts.join('；');
   }
 
   String _size(int bytes) =>
@@ -1380,7 +1797,14 @@ class _TextBrowserPageState extends State<TextBrowserPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-          title: Text(_done ? '文本 ($_rowsCount)' : '文本 (加载中 $_rowsCount…)')),
+          title: Text(_done ? '文本 ($_rowsCount)' : '文本 (加载中 $_rowsCount…)'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.find_replace, size: 20),
+              tooltip: '全 ROM 查找/替换',
+              onPressed: _writer.supported ? _openFindReplace : null,
+            ),
+          ]),
       body: Column(
         children: [
           Padding(
@@ -1511,10 +1935,210 @@ class _TextBrowserPageState extends State<TextBrowserPage> {
     if (i < 0) return;
     _rows[i] = _TextRow(id, _browser.render(id));
   }
+
+  /// 全 ROM 查找/替换：替换后整体重建列表（条目可能重定位，
+  /// 旧的行缓存不可信）。
+  void _openFindReplace() {
+    final writer = _writer;
+    final fr = TextFindReplace(writer);
+    showDialog<void>(
+      context: context,
+      builder: (_) => _FindReplaceDialog(
+        writer: writer,
+        fr: fr,
+        onReplaced: () {
+          _rows.clear();
+          _filter.clear();
+          _total = 0;
+          _done = false;
+          _loadMore();
+          setState(() {});
+        },
+      ),
+    );
+  }
 }
 
 class _TextRow {
   final int id;
   final String text;
   const _TextRow(this.id, this.text);
+}
+
+/// 全 ROM 文本查找/替换对话框。
+///
+/// 「查找」先列出命中条目（带文本预览），「替换全部」才真正写回；
+/// 写回走 [TextFindReplace]（与单条编辑同一通道，可整体撤销）。
+class _FindReplaceDialog extends StatefulWidget {
+  final TextWriter writer;
+  final TextFindReplace fr;
+
+  /// 有实际替换发生时回调（调用方重建列表）。
+  final VoidCallback onReplaced;
+
+  const _FindReplaceDialog({
+    required this.writer,
+    required this.fr,
+    required this.onReplaced,
+  });
+
+  @override
+  State<_FindReplaceDialog> createState() => _FindReplaceDialogState();
+}
+
+class _FindReplaceDialogState extends State<_FindReplaceDialog> {
+  final _findCtrl = TextEditingController();
+  final _repCtrl = TextEditingController();
+  bool _busy = false;
+  List<int> _matches = const [];
+  String? _summary;
+
+  @override
+  void dispose() {
+    _findCtrl.dispose();
+    _repCtrl.dispose();
+    super.dispose();
+  }
+
+  String _previewText(int id) {
+    final t = (widget.writer.currentText(id) ?? '').replaceAll('\n', ' ');
+    return t.length > 40 ? '${t.substring(0, 40)}…' : t;
+  }
+
+  Future<void> _search() async {
+    final f = _findCtrl.text.trim();
+    if (f.isEmpty) return;
+    setState(() {
+      _busy = true;
+      _summary = null;
+    });
+    await Future<void>.delayed(Duration.zero); // 让转圈先画出来
+    final m = widget.fr.search(f);
+    if (!mounted) return;
+    setState(() {
+      _matches = m;
+      _busy = false;
+    });
+  }
+
+  Future<void> _replace() async {
+    final f = _findCtrl.text.trim();
+    if (f.isEmpty) return;
+    setState(() => _busy = true);
+    final r = widget.fr.replaceAll(f, _repCtrl.text);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _matches = const [];
+      _summary = '改了 ${r.changed} 条 · 未变 ${r.identical} 条 · '
+          '失败 ${r.failures.length} 条'
+          '${r.failures.isEmpty ? '' : '\n${r.failures.take(3).join('\n')}'
+          '${r.failures.length > 3 ? '\n等 ${r.failures.length} 条' : ''}'}';
+      if (r.changed > 0) widget.onReplaced();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canReplace =
+        _summary != null || (_matches.isNotEmpty && _repCtrl.text.isNotEmpty);
+    return AlertDialog(
+      title: const Text('全 ROM 查找 / 替换'),
+      content: SizedBox(
+        width: 400,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _findCtrl,
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: '查找内容',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _search(),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _repCtrl,
+              decoration: const InputDecoration(
+                isDense: true,
+                labelText: '替换为（留空 = 删除）',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: _busy ? null : _search,
+                  child: const Text('查找'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: _busy ? null : (canReplace ? _replace : null),
+                  child: const Text('替换全部'),
+                ),
+                if (_busy) ...[
+                  const SizedBox(width: 12),
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ],
+              ],
+            ),
+            if (_summary != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(_summary!, style: const TextStyle(fontSize: 12)),
+              ),
+            if (_matches.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  '命中 ${_matches.length} 条：',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.primary),
+                ),
+              ),
+              for (final id in _matches.take(5))
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '0x${id.toRadixString(16).toUpperCase().padLeft(4, '0')}：'
+                    '${_previewText(id)}',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              if (_matches.length > 5)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text('…共 ${_matches.length} 条',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                ),
+            ],
+            const Padding(
+              padding: EdgeInsets.only(top: 10),
+              child: Text(
+                '替换覆盖全部命中条目。改完可点主页「撤销全部」回退。',
+                style: TextStyle(fontSize: 11, color: Colors.blueGrey),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
 }

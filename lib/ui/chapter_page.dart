@@ -1,18 +1,34 @@
-import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../core/chapter_dialog_io.dart';
+import '../core/chapter_dialogs.dart';
+import 'chapter_preview_page.dart';
+import 'dialog_script_page.dart';
+import 'event_editor_page.dart';
 import '../core/chapter_events.dart';
 import '../core/fe_rom.dart';
 import '../core/chapter_traps.dart';
+import '../core/chest_shop.dart';
 import '../core/editable_rom.dart';
+import '../core/file_picker_service.dart';
 import '../core/map_reader.dart';
 import '../core/map_sprite_image.dart';
 import '../core/tile_image.dart';
 import '../core/unit_placement.dart';
+import 'add_reinforcement_dialog.dart';
 import 'disasm_page.dart';
+import 'item_picker_dialog.dart';
+import 'map_chipset_editor_page.dart';
+import 'map_image_cache.dart';
+import 'map_tile_editor_page.dart';
+import 'text_edit_dialog.dart';
 import 'unit_placement_page.dart' show PlacedUnitEditPage;
+
+import '../core/text_writer.dart';
 
 /// 「章节」页：把原来的「关卡地图」和「章节单位」合成一处。
 ///
@@ -52,7 +68,9 @@ class _ChapterPageState extends State<ChapterPage> {
   List<ChapterTrap> _traps = const [];
   int _trapsChapter = -1;
 
-  late final ChapterEvents _events = ChapterEvents(widget.edit.rom);
+  late final ChapterEvents _events = ChapterEvents(widget.edit.rom)
+    ..itemNameOf = (id) => widget.edit.liveRom.itemDisplayName(id);
+  late final ChestShop _chestShop = ChestShop(widget.edit);
 
   /// 当前章节的事件（触发条件 + 增援单位），随章节切换重建。
   List<({ChapterEvent event, List<LoadedUnit> units})> _eventRows = const [];
@@ -74,6 +92,18 @@ class _ChapterPageState extends State<ChapterPage> {
     return _eventRows;
   }
 
+  /// 当前章节事件脚本引用的对话（文本 ID，去重后按出现顺序）。
+  List<ChapterDialogue> _dialogRows = const [];
+  int _dialogsChapter = -1;
+
+  List<ChapterDialogue> get _currentDialogues {
+    if (_dialogsChapter != _chapter) {
+      _dialogsChapter = _chapter;
+      _dialogRows = ChapterDialogues.of(widget.edit, _chapter).dialogues;
+    }
+    return _dialogRows;
+  }
+
   List<ChapterTrap> get _currentTraps {
     if (_trapsChapter != _chapter) {
       final t = ChapterTraps(widget.edit);
@@ -83,13 +113,6 @@ class _ChapterPageState extends State<ChapterPage> {
           : const [];
     }
     return _traps;
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _MapImageCache.instance.bindRom(widget.edit.rom.fingerprint);
-    MapSpriteImageCache.instance.bindRom(widget.edit.rom.fingerprint);
   }
 
   @override
@@ -167,9 +190,12 @@ class _ChapterPageState extends State<ChapterPage> {
   @override
   Widget build(BuildContext context) {
     final map = _map.available ? _map.chapterMap(_chapter) : null;
+    final title = _units.chapterTitle(_chapter);
     return Scaffold(
       appBar: AppBar(
-        title: Text(map == null ? '章节单位' : '第 $_chapter 章'),
+        title: Text(
+          map == null ? '章节单位' : '第 $_chapter 章${title.isEmpty ? '' : '「$title」'}',
+        ),
         actions: [
           if (widget.edit.hasChanges)
             IconButton(
@@ -220,22 +246,44 @@ class _ChapterPageState extends State<ChapterPage> {
                       : Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  '$i',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                    color: selected
-                        ? Theme.of(context).colorScheme.onPrimaryContainer
-                        : null,
-                  ),
-                ),
+                child: _buildChapterChip(ctx, i, selected),
               ),
             ),
           );
         },
       ),
     );
+  }
+
+  /// 章节选择 chip：序号 + 游戏内章节标题（与标题卡副标题一致，方便跟游戏对齐）。
+  Widget _buildChapterChip(BuildContext ctx, int i, bool selected) {
+    final title = _units.chapterTitle(i);
+    final style = TextStyle(
+      fontSize: 14,
+      fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+      color: selected
+          ? Theme.of(ctx).colorScheme.onPrimaryContainer
+          : null,
+    );
+    return title.isEmpty
+        ? Text('$i', style: style)
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('$i', style: style),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 9,
+                  color: selected
+                      ? Theme.of(ctx).colorScheme.onPrimaryContainer
+                      : Theme.of(ctx).colorScheme.onSurfaceVariant,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          );
   }
 
   Widget _mapToolbar(ChapterMap map) {
@@ -264,6 +312,52 @@ class _ChapterPageState extends State<ChapterPage> {
             ),
             onPressed: () => setState(() => _showTraps = !_showTraps),
           ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: '预览（对话时间线 / 事件触发）',
+            icon: const Icon(Icons.visibility_outlined, size: 18),
+            onPressed: _openPreviewPage,
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: '编辑地形砖块',
+            icon: const Icon(Icons.edit_location_alt, size: 18),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => MapTileEditorPage(
+                  edit: widget.edit,
+                  chapter: _chapter,
+                ),
+              ),
+            ).then((_) {
+              MapImageCache.instance.clear();
+              setState(() {
+                _mapImage = null;
+                _mapImageChapter = -1;
+              });
+            }),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: '编辑砖块图形（TSA 图形，改地形长什么样）',
+            icon: const Icon(Icons.texture, size: 18),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => MapChipsetEditorPage(
+                  edit: widget.edit,
+                  chapter: _chapter,
+                ),
+              ),
+            ).then((_) {
+              MapImageCache.instance.clear();
+              setState(() {
+                _mapImage = null;
+                _mapImageChapter = -1;
+              });
+            }),
+          ),
           Flexible(
             child: Text(
               '${map.width}×${map.height} 格 · 单位 $overlayCount 个'
@@ -273,6 +367,33 @@ class _ChapterPageState extends State<ChapterPage> {
             ),
           ),
           const Spacer(),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: '事件编辑（追加触发事件）',
+            icon: const Icon(Icons.bolt_outlined, size: 18),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => EventEditorPage(
+                  edit: widget.edit,
+                  chapter: _chapter,
+                  chapterTitle: _units.chapterTitle(_chapter),
+                ),
+              ),
+            ).then((_) => setState(() {})),
+          ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: '添加剧情增援（第 N 回合生成单位）',
+            icon: const Icon(Icons.person_add_alt, size: 18),
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (_) => AddReinforcementDialog(
+                edit: widget.edit,
+                chapter: _chapter,
+              ),
+            ).then((_) => setState(() {})),
+          ),
           IconButton(
             visualDensity: VisualDensity.compact,
             tooltip: '放大',
@@ -340,17 +461,25 @@ class _ChapterPageState extends State<ChapterPage> {
           if (img != null)
             Positioned.fill(
               child: FutureBuilder<ui.Image>(
-                future: _MapImageCache.instance.load(
-                  _MapImageCache.instance.keyFor(_chapter, 0),
+                future: MapImageCache.instance.load(
+                  MapImageCache.instance.keyFor(
+                      widget.edit.rom.fingerprint, _chapter, 0),
                   img,
                 ),
                 builder: (ctx, snap) {
                   if (!snap.hasData) {
-                    return const Center(
-                      child: SizedBox(
+                    // 解码未完成的占位用**静态**控件。
+                    // 不用 CircularProgressIndicator：无限圆环是周期性动画，
+                    // 会永久调度帧——widget 测试里 `decodeImageFromPixels`
+                    // 的回调永不触发，spinner 就永远转，`pumpAndSettle` 挂死。
+                    return Center(
+                      child: Container(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
                       ),
                     );
                   }
@@ -518,9 +647,12 @@ class _ChapterPageState extends State<ChapterPage> {
         ? const <PlacedUnit>[]
         : _overlayUnits.where((u) => u.x == s.x && u.y == s.y).toList();
     final rom = widget.edit.rom;
+    // 格子里存的是砖块值（渲染时按 `~/4` 查 TSA），不是地形 ID；
+    // 直接拿去查地形名表只会拿到「地形 0xNN」这类无效值。
     final text = s == null
-        ? '${map.width}×${map.height} 格 · 点地图查看格子与地形'
-        : '(${s.x}, ${s.y}) · ${_map.terrainName(map.tileAt(s.x, s.y))}'
+        ? '${map.width}×${map.height} 格 · 点地图查看格子与站位单位'
+        : '(${s.x}, ${s.y}) · 砖块 '
+            '0x${map.tileAt(s.x, s.y).toRadixString(16).toUpperCase()}'
             '${at.isEmpty ? '' : ' · ${at.map((u) => rom.unitDisplayName(u.unitIndex)).join(' / ')}'}';
     return Container(
       width: double.infinity,
@@ -536,6 +668,7 @@ class _ChapterPageState extends State<ChapterPage> {
       children: [
         _slotBar(),
         _eventBar(),
+        _dialogBar(),
         Expanded(
           child: rows.isEmpty
               ? Center(
@@ -583,6 +716,156 @@ class _ChapterPageState extends State<ChapterPage> {
     return '${widget.edit.rom.unitDisplayName(u.unitIndex).trim()}'
         '(${u.x},${u.y} ${_factionLabel(u.allegiance)} Lv${u.level}'
         '${outside ? ' 图外' : ''})';
+  }
+
+  /// 宝箱行标题：奖励道具名从**实时 buffer** 重读（事件行的 condition 文本
+  /// 在缓存里是按原快照生成的，改完奖励后不重读会一直显示旧道具）。
+  String _chestTitle(ChapterEvent e) {
+    final x = e.value & 0xFF;
+    final y = (e.value >> 8) & 0xFF;
+    final item = _chestShop.chestItemNow(e);
+    final name = widget.edit.liveRom.itemDisplayName(item).trim();
+    return '开宝箱 ($x, $y)（得到 ${name.isEmpty ? '道具 $item' : name}）';
+  }
+
+  /// 改完宝箱奖励：关掉当前底表重开（condition 文本是读时生成的）。
+  void _refreshEventSheet(BuildContext sheetCtx) {
+    Navigator.pop(sheetCtx);
+    _eventsChapter = -1;
+    setState(() {});
+    if (mounted) _showEventSheet(_currentEvents);
+  }
+
+  /// 宝箱行尾的「改奖励」入口。
+  Widget _chestAction(BuildContext ctx, ChapterEvent e) {
+    final cs = _chestShop;
+    final item = cs.chestItemNow(e);
+    final name = widget.edit.liveRom.itemDisplayName(item).trim();
+    return InkWell(
+      onTap: () async {
+        final picked = await showDialog<int>(
+          context: ctx,
+          builder: (dctx) => ItemPickerDialog(
+            count: widget.edit.rom.itemCount,
+            current: item,
+            nameOf: (id) => widget.edit.liveRom.itemDisplayName(id),
+            title: '改宝箱奖励',
+          ),
+        );
+        if (picked == null) return;
+        final n = cs.setChestItem(e, picked);
+        if (n < 0 || n == 0) return;
+        _refreshEventSheet(ctx);
+      },
+      child: Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.confirmation_number_outlined,
+                size: 13, color: Theme.of(ctx).colorScheme.primary),
+            const SizedBox(width: 3),
+            Text(
+              '改奖励（现为：${name.isEmpty ? '道具 $item' : name}）',
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(ctx).colorScheme.primary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 商店行尾的「换品」入口：只能**原地替换**已有槽位（列表在 ROM 里
+  /// 挨着排布，扩容会顶进下一张列表，所以不做增删）。
+  Widget _shopAction(BuildContext ctx, ChapterEvent e) {
+    final items = _chestShop.shopItemsOf(e);
+    if (items.isEmpty) return const SizedBox.shrink();
+    return InkWell(
+      onTap: () => _editShopList(ctx, e, items),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.storefront, size: 13,
+                color: Theme.of(ctx).colorScheme.primary),
+            const SizedBox(width: 3),
+            Text(
+              '商店 ${items.length} 件 · 点换品',
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(ctx).colorScheme.primary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _editShopList(BuildContext ctx, ChapterEvent e, List<int> items) {
+    final cs = _chestShop;
+    final live = widget.edit.liveRom;
+    showModalBottomSheet<void>(
+      context: ctx,
+      isScrollControlled: true,
+      builder: (sctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.5,
+        builder: (sctx, controller) => ListView(
+          controller: controller,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Text(
+                '本店出售（点某行换掉那件；只替换、不增删——'
+                '列表在 ROM 里挨着排，扩容会改坏别的商店）',
+                style:
+                    TextStyle(fontSize: 12, color: Colors.blueGrey.shade700),
+              ),
+            ),
+            for (var i = 0; i < items.length; i++)
+              ListTile(
+                dense: true,
+                leading: Text('${i + 1}',
+                    style:
+                        const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                title: Text(
+                  live.itemDisplayName(items[i]).trim().isEmpty
+                      ? '（未命名）'
+                      : live.itemDisplayName(items[i]).trim(),
+                ),
+                trailing: Text('${items[i]}',
+                    style:
+                        const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                onTap: () async {
+                  Navigator.pop(sctx);
+                  final picked = await showDialog<int>(
+                    context: context,
+                    builder: (dctx) => ItemPickerDialog(
+                      count: widget.edit.rom.itemCount,
+                      current: items[i],
+                      nameOf: (id) => live.itemDisplayName(id),
+                      title: '换掉第 ${i + 1} 格',
+                    ),
+                  );
+                  if (picked == null || picked == items[i]) {
+                    setState(() {});
+                    return;
+                  }
+                  final n = cs.setShopItem(e, i, picked);
+                  if (n < 0) return;
+                  _eventsChapter = -1;
+                  setState(() {});
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 事件入口条：点开看本章的触发条件与剧情增援。
@@ -644,6 +927,7 @@ class _ChapterPageState extends State<ChapterPage> {
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (ctx, i) {
                   final r = rows[i];
+                  final cs = _chestShop;
                   return ListTile(
                     dense: true,
                     leading: Chip(
@@ -655,7 +939,7 @@ class _ChapterPageState extends State<ChapterPage> {
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                     title: Text(
-                      r.event.condition,
+                      cs.isChest(r.event) ? _chestTitle(r.event) : r.event.condition,
                       style: const TextStyle(fontSize: 13),
                     ),
                     subtitle: Column(
@@ -669,6 +953,8 @@ class _ChapterPageState extends State<ChapterPage> {
                                   .join('、'),
                           style: const TextStyle(fontSize: 11),
                         ),
+                        if (cs.isChest(r.event)) _chestAction(ctx, r.event),
+                        if (cs.isShop(r.event)) _shopAction(ctx, r.event),
                         // 事件脚本是 ARM/Thumb 机器码：直接丢给反汇编页看命令流
                         if (r.event.script != 0 &&
                             FeRom.isPointer(r.event.script, rom.length))
@@ -711,6 +997,221 @@ class _ChapterPageState extends State<ChapterPage> {
                   );
                 },
               ),
+      ),
+    );
+  }
+
+  /// 对话入口条：点开看本章事件脚本引用的对话文本（可编辑）。
+  Widget _dialogBar() {
+    final rows = _currentDialogues;
+    final supported = TextWriter(widget.edit).supported;
+    return Row(
+      children: [
+        Expanded(
+          child: InkWell(
+            onTap: () => _showDialogSheet(rows),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.chat_bubble_outline, size: 16),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '本章对话 ${rows.length} 条（点条目直接编辑）',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        // 整章批量导入/导出（#define 风格文本，对大量改剧情的人最实用）
+        TextButton.icon(
+          onPressed: supported ? () => _exportChapterDialogs() : null,
+          icon: const Icon(Icons.file_download_outlined, size: 14),
+          label: const Text('导出', style: TextStyle(fontSize: 12)),
+        ),
+        TextButton.icon(
+          onPressed: supported ? () => _importChapterDialogs() : null,
+          icon: const Icon(Icons.file_upload_outlined, size: 14),
+          label: const Text('导入', style: TextStyle(fontSize: 12)),
+        ),
+        // 场景化编辑：按「一场戏 → 一句一句」读，比按 ID 点更接近写剧情
+        TextButton.icon(
+          onPressed: rows.isEmpty ? null : _openScriptPage,
+          icon: const Icon(Icons.article_outlined, size: 16),
+          label: const Text('按场景编辑', style: TextStyle(fontSize: 12)),
+        ),
+        const Icon(Icons.chevron_right, size: 18),
+      ],
+    );
+  }
+
+  /// 把本章引用的对话导出成 #define 风格文本（系统「另存为」落盘）。
+  Future<void> _exportChapterDialogs() async {
+    final text = ChapterDialogIO.exportChapter(widget.edit, _chapter);
+    if (text == null) {
+      _snackbar('该 ROM 文本引擎不可写，无法导出');
+      return;
+    }
+    final saved = await saveFile(
+        'chapter${_chapter}_dialog.txt',
+        Uint8List.fromList(utf8.encode(text)));
+    _snackbar(saved == null ? '已取消' : '已导出 ${saved.split('/').last}');
+  }
+
+  /// 导入一份 #define 对话补丁：选文件 → 逐条写回（同一写回通道、可整体撤销）
+  /// → 弹窗报告写了几条、跳了几条。
+  Future<void> _importChapterDialogs() async {
+    final text = await pickTextFile();
+    if (text == null) return; // 取消选择
+    final result = ChapterDialogIO.importDialogs(widget.edit, text);
+    if (!mounted) return;
+    setState(() {}); // 对话列表内容可能已变，刷新预读
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(result.allOk ? '对话补丁已应用' : '对话补丁应用（有问题）'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(result.summary, style: const TextStyle(fontSize: 13)),
+              if (result.problems.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  result.problems.take(12).join('\n'),
+                  style: TextStyle(
+                      fontSize: 11, color: Colors.orange.shade800, height: 1.5),
+                ),
+                if (result.problems.length > 12)
+                  Text('… 另有 ${result.problems.length - 12} 条未列出',
+                      style: TextStyle(fontSize: 11, color: Colors.orange.shade800)),
+              ],
+              const SizedBox(height: 8),
+              Text('全部改动都记在编辑记录里，顶栏「撤销全部修改」可一键还原。',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _snackbar(String msg) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _openPreviewPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChapterPreviewPage(
+          edit: widget.edit,
+          chapter: _chapter,
+          chapterTitle: _units.chapterTitle(_chapter),
+        ),
+      ),
+    ).then((_) => setState(() {}));
+  }
+
+  void _openScriptPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DialogScriptPage(
+          edit: widget.edit,
+          chapter: _chapter,
+          chapterTitle: _units.chapterTitle(_chapter),
+        ),
+      ),
+    ).then((_) => setState(() {}));
+  }
+
+  void _showDialogSheet(List<ChapterDialogue> rows) {
+    final writer = TextWriter(widget.edit);
+    final title = _units.chapterTitle(_chapter);
+    final titleLine = title.isEmpty
+        ? '本工具章节号是 0 基（游戏内第一章通常就是第 0 章）。'
+        : '本章游戏内标题「$title」（与游戏标题卡副标题一致）。本工具章节号 0 基，游戏内第一章通常对应第 0 章。';
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        builder: (ctx, controller) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+              child: Text(titleLine, style: const TextStyle(fontSize: 11)),
+            ),
+            Expanded(
+              child: rows.isEmpty
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(24),
+                        child: Text(
+                          '本章事件脚本里没有引用到对话文本。\n'
+                              '对话由事件脚本按文本 ID 引用；\n本章没有引用时这里是空的（不等于游戏里没有文本）。',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(height: 1.6, color: Colors.grey),
+                        ),
+                      ),
+                    )
+                  : ListView.separated(
+                controller: controller,
+                itemCount: rows.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (ctx, i) {
+                  final d = rows[i];
+                  // 与编辑框一致的预填文本（控制码以〔XX〕占位），
+                  // 引擎不可写时退回只读解码
+                  final preview = writer.currentText(d.textId) ??
+                      widget.edit.rom.decodeText(d.textId);
+                  return ListTile(
+                    dense: true,
+                    onTap: () {
+                      // 编辑框叠在面板上（不关掉列表，方便连续改多条）
+                      showTextEditDialog(
+                        ctx,
+                        edit: widget.edit,
+                        textId: d.textId,
+                        title: '本章对话 #${d.textId}',
+                      );
+                    },
+                    leading: Chip(
+                      label: Text(
+                        '#${d.textId}',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    title: Text(
+                      preview.replaceAll('\n', '⏎').length > 40
+                          ? '${preview.replaceAll('\n', '⏎').substring(0, 40)}…'
+                          : preview.replaceAll('\n', '⏎'),
+                      style: const TextStyle(fontSize: 12, height: 1.4),
+                    ),
+                    trailing: const Icon(Icons.chevron_right, size: 18),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -877,48 +1378,6 @@ class _UnitRow {
 
   const _UnitRow.placed(PlacedUnit this.placed) : loaded = null;
   const _UnitRow.loaded(LoadedUnit this.loaded) : placed = null;
-}
-
-/// 地图位图的 `ui.Image` 缓存（照旧，key 含 ROM 指纹）。
-class _MapImageCache {
-  _MapImageCache._();
-  static final _MapImageCache instance = _MapImageCache._();
-
-  final _images = <int, ui.Image>{};
-  int _romTag = 0;
-
-  void bindRom(int romTag) {
-    if (_romTag == romTag) return;
-    _romTag = romTag;
-    for (final img in _images.values) {
-      img.dispose();
-    }
-    _images.clear();
-  }
-
-  int keyFor(int chapter, int salt) =>
-      (_romTag & 0xFFFF) * 0x100000 + chapter * 0x100 + (salt & 0xFF);
-
-  Future<ui.Image> load(int key, TileImage tile) {
-    final cached = _images[key];
-    if (cached != null) return Future.value(cached);
-    final completer = Completer<ui.Image>();
-    ui.decodeImageFromPixels(
-      tile.pixels,
-      tile.width,
-      tile.height,
-      ui.PixelFormat.rgba8888,
-      (img) {
-        if (_images.length >= 24) {
-          final first = _images.keys.first;
-          _images.remove(first)?.dispose();
-        }
-        _images[key] = img;
-        completer.complete(img);
-      },
-    );
-    return completer.future;
-  }
 }
 
 /// 把 `ui.Image` 按像素最近邻铺满画布，**跳过全透明像素**。

@@ -18,6 +18,10 @@ void main() {
     expect(find.text('v$appVersion · $packageName'), findsOneWidget);
     // 反馈入口存在，更新日志已移除
     expect(find.textContaining('加入腾讯频道'), findsOneWidget);
+    // 开源仓库入口：仓库地址在 app_meta 里统一维护
+    expect(find.text('开源仓库'), findsOneWidget);
+    expect(find.textContaining(repoName), findsWidgets);
+    expect(repoUrl, 'https://github.com/agenes-tea/fe_editor_flutter');
     expect(find.text('更新日志'), findsNothing);
     expect(find.text('当前'), findsNothing, reason: '更新日志区块已移除');
 

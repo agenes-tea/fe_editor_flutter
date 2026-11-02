@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/editable_rom.dart';
+import '../core/fe_rom.dart';
 import '../core/item_catalog.dart';
 import '../core/item_flags.dart';
 import '../core/item_icon.dart';
@@ -270,8 +271,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
           const SizedBox(height: 12),
           _itemFlagsCard(itemAddr),
           const SizedBox(height: 12),
+          _itemIntro(rom, entry.id),
+          _itemLockCard(context, rom, entry),
           if (!bonuses.isEmpty) ...[
-            _section(context, '数值加成（只读）'),
+            _section(context, '数值加成（只读，加到持有者身上）'),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -401,6 +404,108 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   }
 
   Widget _section(BuildContext context, String t) => sectionTitle(context, t);
+
+  /// 介绍（道具表 +2）与使用介绍（+4，游戏里按 A 使用那一段）。
+  /// 空文本不显示。
+  Widget _itemIntro(FeRom rom, int id) {
+    final desc = rom.itemDescription(id).trim();
+    final useDesc = rom.itemUseDescription(id).trim();
+    if (desc.isEmpty && useDesc.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    return Column(
+      children: [
+        sectionTitle(context, '介绍'),
+        Card(
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (desc.isNotEmpty)
+                  Text(desc, style: const TextStyle(fontSize: 13, height: 1.6)),
+                if (desc.isNotEmpty && useDesc.isNotEmpty)
+                  const SizedBox(height: 6),
+                if (useDesc.isNotEmpty)
+                  Text(useDesc,
+                      style: TextStyle(
+                          fontSize: 13,
+                          height: 1.6,
+                          color: theme.colorScheme.outlineVariant)),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+
+  /// 专用限制（IA_LOCK_*）：哪些角色能用这把武器。
+  ///
+  /// 反编译依据（fireemblem6j item.c 的 CanUnitUseWeapon）：
+  /// 带 LOCK 位的道具，角色表 attributes u32@+0x28 必须带对应
+  /// CA_LOCK 位才能用；这些位也可能由游戏事件动态授予，
+  /// 所以「静态持有者」可能比实际少（原版 FE6 只有 Zephia 一条）。
+  Widget _itemLockCard(BuildContext context, FeRom rom, ItemEntry entry) {
+    final locks = ItemCatalog(rom).lockInfo(entry);
+    if (locks.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('专用限制（LOCK，只读）',
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            for (final l in locks) ...[
+              Row(
+                children: [
+                  Text(l.label,
+                      style: TextStyle(
+                          color: theme.colorScheme.error,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: l.holders.isEmpty
+                        ? Text('角色表暂无人带此位（游戏内可由事件授予主角）',
+                            style:
+                                const TextStyle(fontSize: 12, color: Colors.grey))
+                        : Wrap(
+                            spacing: 4,
+                            children: [
+                              for (final h in l.holders)
+                                ActionChip(
+                                  label: Text(
+                                      rom.unitDisplayName(h).trim(),
+                                      style: const TextStyle(fontSize: 11)),
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => UnitEditPage(
+                                        edit: widget.edit, index: h),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+            ],
+            Text('未带对应位（或未被事件授予）的角色无法装备此武器。',
+                style: TextStyle(fontSize: 12, color: theme.colorScheme.outlineVariant)),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _row(String k, String v) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),

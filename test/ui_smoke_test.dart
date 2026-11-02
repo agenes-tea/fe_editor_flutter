@@ -6,6 +6,10 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/ui/battle_anim_page.dart';
 import 'package:fe_editor/ui/chapter_page.dart';
 import 'package:fe_editor/ui/unit_page.dart';
+import 'package:fe_editor/ui/health_page.dart';
+import 'package:fe_editor/ui/add_reinforcement_dialog.dart';
+import 'package:fe_editor/core/chapter_events.dart';
+import 'package:fe_editor/core/unit_placement.dart';
 
 const dir = '/root/workspace/game-rom';
 
@@ -93,7 +97,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     // 标题带章节号；工具栏显示格数与单位数
-    expect(find.text('第 0 章'), findsOneWidget);
+    expect(find.textContaining('第 0 章'), findsOneWidget);
     expect(find.textContaining('格'), findsWidgets);
     // 单位列表同时存在（不再需要另一个页面）
     expect(find.textContaining('Lv'), findsWidgets);
@@ -109,7 +113,7 @@ void main() {
     final edit = EditableRom.open(data, FeRom.detectTable(data)!);
     await tester.pumpWidget(MaterialApp(home: ChapterPage(edit: edit)));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('第 0 章'), findsOneWidget);
+    expect(find.textContaining('第 0 章'), findsOneWidget);
     expect(find.text('蓝方（我军）'), findsOneWidget);
     expect(find.text('红方（敌军）'), findsOneWidget);
     expect(find.textContaining('Lv'), findsWidgets);
@@ -135,11 +139,13 @@ void main() {
     // 动态行不弹编辑页（无可点入口）：点它不应报错
     await tester.tap(find.text('事件').first);
     await tester.pump(const Duration(milliseconds: 200));
-    expect(find.text('第 0 章'), findsOneWidget);
+    expect(find.textContaining('第 0 章'), findsOneWidget);
   });
 
   testWidgets('章节页 FE6：红/蓝列表也并入事件单位（静态 1 人 + 动态 7 人）',
       (tester) async {
+    await tester.binding.setSurfaceSize(const Size(420, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final data = File(fe6jp).readAsBytesSync();
     final edit = EditableRom.open(data, FeRom.detectTable(data)!);
     await tester.pumpWidget(MaterialApp(home: ChapterPage(edit: edit)));
@@ -173,5 +179,50 @@ void main() {
     await tester.tap(find.text('遭遇我方 1'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('事件'), findsNothing);
+  });
+
+  testWidgets('体检页：原版 ROM 显示结构正常', (tester) async {
+    final data = File(fe8jp).readAsBytesSync();
+    final edit = EditableRom.open(data, FeRom.detectTable(data)!);
+    await tester.pumpWidget(MaterialApp(home: HealthPage(edit: edit)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.text('ROM 体检'), findsOneWidget);
+    expect(find.textContaining('致命 0 项'), findsOneWidget);
+  });
+
+  testWidgets('体检页：表指针写坏后显示致命问题', (tester) async {
+    final data = File(fe8jp).readAsBytesSync();
+    final table = FeRom.detectTable(data)!;
+    final edit = EditableRom.open(data, table);
+    // 把单位表指针槽清 0
+    edit.writeBytes(table.unitPointerSlot, const [0, 0, 0, 0]);
+    await tester.pumpWidget(MaterialApp(home: HealthPage(edit: edit)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.text('发现致命问题'), findsOneWidget);
+    expect(find.textContaining('单位表'), findsWidgets);
+  });
+
+  testWidgets('增援对话框：添加后事件数与单位都写入', (tester) async {
+    final data = File(fe8jp).readAsBytesSync();
+    final edit = EditableRom.open(data, FeRom.detectTable(data)!);
+    final before = ChapterEvents(edit.liveRom)
+        .readList(UnitPlacement(edit).eventGroupOffset(3), 0x00,
+            EventTriggerKind.turn)
+        .length;
+    await tester.pumpWidget(MaterialApp(
+      home: AddReinforcementDialog(edit: edit, chapter: 3),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('添加增援'), findsOneWidget);
+    await tester.tap(find.text('添加'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已'), findsWidgets);
+    final after = ChapterEvents(edit.liveRom)
+        .readList(UnitPlacement(edit).eventGroupOffset(3), 0x00,
+            EventTriggerKind.turn)
+        .length;
+    expect(after, before + 1, reason: '点一次「添加」应真的追加一条');
   });
 }

@@ -35,6 +35,17 @@ class TextBrowser {
     return _format(raw);
   }
 
+  /// 把一段**原始字节**（不是文本 ID）渲染成可读字符串。
+  ///
+  /// 章节名、地形名这类「表里直接存指针指向字符串」的场景用得上，
+  /// 它们不在文本指针表里，没法用 [render] 按 ID 取。
+  String renderBytes(Uint8List raw) {
+    if (rom.textEncoding == FeTextEncoding.plainUtf8) {
+      return Utf8Codec.decode(raw);
+    }
+    return _format(raw);
+  }
+
   String _format(Uint8List raw) {
     final sb = StringBuffer();
     var i = 0;
@@ -63,7 +74,9 @@ class TextBrowser {
 
   /// 控制码的可读形式。常见：
   /// 0x01=行等待 0x02=清屏等待 0x03=段尾换行 0x09=换行
-  /// 0x0B/0x0C=清屏 0x0F=变色(1参) 0x10=变量(1参) 0x1A=菜单项
+  /// 0x0B/0x0C=清屏 0x0F=变色(1字节) 0x10=变量(2字节) 0x1A=菜单项(1字节)
+  /// 参数按**字节**读（与 [TextControlCodec.argsOf] 一致）：按 u16 读会把紧跟的汉字
+  /// 吃掉半个字节，后面整条错位成乱码。
   String _ctrl(Uint8List raw, int i, void Function(int) advance) {
     final b = raw[i];
     String name;
@@ -99,6 +112,14 @@ class TextBrowser {
         name = '＃';
         args = 2;
         break;
+      case 0x11:
+        name = '◆';
+        args = 1;
+        break;
+      case 0x15:
+        name = '✥';
+        args = 1;
+        break;
       case 0x1A:
         name = '▸';
         args = 1;
@@ -108,10 +129,9 @@ class TextBrowser {
     }
     i++;
     var argText = '';
-    for (var k = 0; k < args && i + 1 < raw.length; k++) {
-      final v = raw[i] | (raw[i + 1] << 8);
-      argText += v.toRadixString(16).padLeft(4, '0').toUpperCase();
-      i += 2;
+    for (var k = 0; k < args && i < raw.length; k++) {
+      argText += raw[i].toRadixString(16).padLeft(2, '0').toUpperCase();
+      i++;
     }
     advance(i);
     return argText.isEmpty ? name : '$name$argText';

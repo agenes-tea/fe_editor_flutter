@@ -14,6 +14,10 @@ import '../core/tile_image.dart';
 ///
 /// **key 必须含 ROM 身份**：缓存是全局单例，只按「肖像索引 + 用途」做 key 的话，
 /// 先打开烈火之剑再打开封印之剑，相同索引会直接命中上一个 ROM 的图。
+///
+/// 身份由调用方显式传入（[keyFor] 的 `romTag`），而不是「当前 ROM」这样的
+/// 全局状态：多个 ROM 同时打开时，各自页面始终读到自己那份图，
+/// 也不会因为切换 ROM 把另一份的缓存清掉。
 class PortraitImageCache {
   PortraitImageCache._();
   static final PortraitImageCache instance = PortraitImageCache._();
@@ -21,25 +25,13 @@ class PortraitImageCache {
   static const int cacheLimit = 96;
   final _images = <int, ui.Image>{};
 
-  /// 当前 ROM 的身份标签，换 ROM 时由 [bindRom] 更新。
-  int _romTag = 0;
-
-  /// 绑定当前 ROM。打开 ROM 时调用一次；同一个 tag 重复调用不会反复清缓存。
-  ///
-  /// tag 取 ROM 内容哈希：换 ROM 时自动清空旧图，同一个 ROM 重开也不会误清。
-  void bindRom(int romTag) {
-    if (_romTag == romTag) return;
-    _romTag = romTag;
-    clear();
-  }
-
-  /// 拼 key：ROM tag | 索引 | 用途，三段互不重叠。
+  /// 拼 key：ROM 指纹 | 索引 | 用途，三段互不重叠。
   ///
   /// 不直接用「索引 × 1000 + 用途」—— 那只能在单 ROM 内唯一，
   /// 跨 ROM 会直接撞上，把上一个 ROM 的图端出来。
-  int keyFor(int portraitId, int purpose) {
+  int keyFor(int romTag, int portraitId, int purpose) {
     final id = portraitId & 0xFFFF;
-    return (_romTag & 0xFFFFFFFF) * 0x100000 + (id * 16) + (purpose & 0xF);
+    return (romTag & 0xFFFFFFFF) * 0x100000 + (id * 16) + (purpose & 0xF);
   }
 
   Future<ui.Image> load(int key, TileImage tile) async {
@@ -243,7 +235,7 @@ class _PortraitListPageState extends State<PortraitListPage> {
                         : PortraitView(
                             tile: face,
                             cacheKey:
-                                PortraitImageCache.instance.keyFor(t.id, 1),
+                                PortraitImageCache.instance.keyFor(_reader.rom.fingerprint, t.id, 1),
                             width: 40,
                             height: 40,
                           ),
@@ -319,7 +311,7 @@ class PortraitDetailPage extends StatelessWidget {
                   )
                 : PortraitView(
                     tile: face,
-                    cacheKey: PortraitImageCache.instance.keyFor(id, 2),
+                    cacheKey: PortraitImageCache.instance.keyFor(reader.rom.fingerprint, id, 2),
                     width: 96,
                     height: 80,
                   ),
@@ -378,7 +370,7 @@ class PortraitDetailPage extends StatelessWidget {
                     // cacheKey 必须每帧唯一，否则不同帧会互相覆盖缓存而串图
                     _Preview(
                       tile: shown[i].$2!,
-                      cacheKey: PortraitImageCache.instance.keyFor(id, 3 + i),
+                      cacheKey: PortraitImageCache.instance.keyFor(reader.rom.fingerprint, id, 3 + i),
                     ),
                     Text(shown[i].$1, style: const TextStyle(fontSize: 11)),
                   ],

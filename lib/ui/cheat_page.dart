@@ -101,6 +101,20 @@ class _CheatListPageState extends State<CheatListPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(preset.description),
+              if (preset.combo != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '包含子项：${preset.combo!
+                      .map((id) =>
+                          cheatPresets
+                              .where((p) => p.id == id)
+                              .firstOrNull
+                              ?.title ??
+                          id)
+                      .join('、')}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
               const SizedBox(height: 12),
               Text(
                 preset.scopeSelectable

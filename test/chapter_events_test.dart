@@ -78,22 +78,55 @@ void main() {
       }
     });
 
-    test('所有版本的事件脚本指针都合法（不会把数据当事件）', () {
+    test('参数型条目（宝箱/商店/门）的第 2 字不是脚本指针，其余类型是', () {
+      // `EvtListCHES(item, x, y)` 的第 2 字是奖励道具 ID，`EvtListDOOR` 恒为 1。
+      // 早先「只收合法指针」会把这三类静默丢掉（FE8 的 50 条宝箱一条都看不到）。
+      var paramType = 0;
+      var scriptType = 0;
       for (final kw in ['1692 -', '1235', '0979', 'The Last Promise', '0378 -']) {
         final edit = _open(kw);
         final up = UnitPlacement(edit);
         final ce = ChapterEvents(edit.rom);
-        var checked = 0;
         for (var ch = 0; ch < up.chapterCount && ch < 20; ch++) {
           final ev = up.eventGroupOffset(ch);
           if (ev <= 0) continue;
           for (final e in ce.all(ev)) {
-            expect(FeRom.isPointer(e.script, edit.rom.length), isTrue,
-                reason: '$kw ch$ch');
-            checked++;
+            final type = e.check & 0xFFFF;
+            if (type == 7 || type == 8 || type == 10) {
+              paramType++;
+            } else {
+              if (FeRom.isPointer(e.script, edit.rom.length)) scriptType++;
+            }
           }
         }
-        expect(checked, greaterThan(0), reason: '$kw 应该能读出事件');
+      }
+      expect(paramType, greaterThan(0), reason: '应该能读到宝箱/门/商店条目');
+      expect(scriptType, greaterThan(0), reason: '普通事件应仍是合法脚本指针');
+    });
+
+    test('宝箱的道具 ID 只取第 2 字的低 16 位', () {
+      // 实测封印第 3 章宝箱原始字节 `07 00 00 00 | 6f 00 b8 0b | 16 0c 12 00`：
+      // 道具 0x6F、坐标 (22,12)；高 16 位 0x0BB8 是附加字段。
+      // 早先按整个 u32 当道具 ID，会显示成「道具 196608111」。
+      final edit = _open('火焰纹章 - 封印之剑');
+      final up = UnitPlacement(edit);
+      final ce = ChapterEvents(edit.rom);
+      final ev = up.eventGroupOffset(3);
+      final chests = ce
+          .all(ev)
+          .where((e) => (e.check & 0xFFFF) == 7)
+          .toList();
+      expect(chests, isNotEmpty, reason: '第 3 章应有宝箱');
+      for (final c in chests) {
+        final itemId = c.script & 0xFFFF;
+        expect(itemId, lessThan(edit.rom.itemCount),
+            reason: '宝箱道具 ID 应落在道具表内（取低 16 位）');
+        expect(c.condition, isNot(contains('道具 19660')));
+      }
+      // 那条已知的错位条目：坐标 (22,12) 的宝箱道具应是 0x6F
+      final target = chests.where((c) => c.condition.contains('(22, 12)'));
+      if (target.isNotEmpty) {
+        expect(target.first.script & 0xFFFF, 0x6F);
       }
     });
 
@@ -116,11 +149,15 @@ void main() {
       final ev = up.eventGroupOffset(0);
       expect(ev, greaterThan(0));
       final events = ce.all(ev);
-      expect(events.length, 10, reason: '第 0 章 10 条事件');
+      // 修好 readList 后多出 2 条真实「踩地砖」条目（LOCA，第 2 字是 tile_command
+      // 而不是脚本指针，早先被「只收合法指针」过滤掉了）。
+      expect(events.length, 12, reason: '第 0 章 12 条事件');
+      expect(events.where((e) => (e.check & 0xFFFF) == 5).length, 2,
+          reason: '2 条踩地砖条目');
       // 旧实现按事件 plist 定位 FE6 → 第 1 章读出 50 条「地点事件」、第 5 章 84 条，
-      // script 指到图形数据；现在第 0/1/5 章分别是 10/8/13 条，全 ROM 最多 46 条。
+      // script 指到图形数据；现在第 0/1/5 章分别是 12/11/15 条，全 ROM 最多 45 条。
       expect([for (final ch in [0, 1, 5]) ce.all(up.eventGroupOffset(ch)).length],
-          [10, 8, 13]);
+          [12, 11, 15]);
       for (var ch = 0; ch < up.chapterCount; ch++) {
         final ev2 = up.eventGroupOffset(ch);
         if (ev2 <= 0) continue;
@@ -239,8 +276,13 @@ void main() {
     test('FE7U/FE7J 有增援的章节数（旧实现为 0）', () {
       for (final kw in ['1235', '0979']) {
         final stat = _scanRom(_open(kw));
-        expect(stat.chapters, greaterThan(70), reason: kw);
-        expect(stat.units, greaterThan(1500), reason: kw);
+        // 阈值按「修好 readList」后的真实值定（旧实现把 loca 槽里混进的
+        // 下一张列表条目也算成 char 事件，章节数虚高到 70+）。
+        expect(stat.chapters, greaterThan(55), reason: kw);
+        // 修好「FE7 turn 列表按 12 字节读」后数字大幅下降：旧实现按 16 字节读
+        // turn/loca/misc，会多读出十倍以上的错位条目，其中不少碰巧解成「单位数组」，
+        // 把总数虚高到 1500+。现在全章扫描 46 章有增援、坐标 0 越界。
+        expect(stat.units, greaterThan(300), reason: kw);
         // 少量单位来自共用脚本引用的下一章单位组（会标「图外」），不超过 10%
         expect(stat.outOfMap * 10, lessThan(stat.units), reason: kw);
       }
@@ -251,7 +293,7 @@ void main() {
       final ce = ChapterEvents(edit.rom);
       expect(ce.commandTable()!.count, 232);
       expect(ce.loadCommandIds, {0x32, 0x33});
-      expect(_scanRom(edit).chapters, greaterThan(60));
+      expect(_scanRom(edit).chapters, greaterThan(45));
     });
 
     test('The Last Promise（表在扩展区）也能读出增援', () {

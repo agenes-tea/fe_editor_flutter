@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'app_log.dart';
 import 'editable_rom.dart';
 import 'fe_rom.dart';
 import 'gbk_table.dart';
 import 'hex_view.dart';
 import 'huffman_encoder.dart';
+import 'map_writer.dart' show MapWriter;
 import 'sjis_table.dart';
 import 'text_codec.dart';
 import 'text_control.dart';
@@ -51,12 +53,20 @@ class TextWriteResult {
   /// 重定位后的新偏移；原地写入时为 -1。
   final int newOffset;
 
+  /// 写入前指针槽里的 GBA 地址；未知时为 -1。
+  final int oldPointer;
+
+  /// 写入后指针槽里的 GBA 地址（原地写时等于 [oldPointer]）；未知时为 -1。
+  final int newPointer;
+
   const TextWriteResult(
     this.mode, {
     this.message = '',
     this.originalBytes = 0,
     this.newBytes = 0,
     this.newOffset = -1,
+    this.oldPointer = -1,
+    this.newPointer = -1,
   });
 
   bool get ok =>
@@ -82,7 +92,7 @@ class TextWriteResult {
 /// 2. **变短**：原地写并在更早处放 0x00，后面残留字节被解码器忽略。
 /// 3. **变长**：找一段空闲（选**最长**的 0xFF 块，通常就是 ROM 末尾空白）写入新文本，
 ///    再把指针表 `textBase + id*4` 重指过去。偏移必须 < 32MB（`toOffset` 只保留 25 位）。
-/// 4. Huffman 引擎无法原地比较长度，统一走重定位。
+/// 4. Huffman 引擎：重压缩后与原流同字节→不写；变短→原地写；变长才重定位。
 ///
 /// **控制码**（换行 / 按键 / 颜色 / 变量等）通过 [TextControlCodec] 编成
 /// `〔XX〕` / `〔XX:AABB〕` 占位符，用户可以连同文本一起编辑、保留它们即可。
@@ -222,6 +232,17 @@ class TextWriter {
     return null;
   }
 
+  /// 这段「已编码字节」能否写进该 ROM。
+  ///
+  /// 明文引擎只要有编码就能写；Huffman 还要树里有对应叶子，否则重压缩会失败。
+  /// 缺字检查靠它逐字判断——只看 [encode] 会把「字符表有、Huffman 树没有」的字放过。
+  bool encodableBytes(Uint8List bytes) {
+    if (!supported) return false;
+    if (!isHuffman) return true;
+    if (!_encoder.available) return false;
+    return _encoder.canEncode(bytes);
+  }
+
   /// 把一段「纯文本」字节按该 ROM 的编码解成字符串（不 trim，供编辑框与分段解码）。
   String decodeExact(Uint8List bytes) {
     if (isUtf8) {
@@ -234,6 +255,7 @@ class TextWriter {
     if (isHuffmanSjis) return _decodeSjisNoTrim(bytes);
     if (isHuffmanZhTbl) return rom.zhTable?.decode(bytes) ?? '';
     // GBK
+    // 码表外的双字节码对同样编成 〔hhll〕 占位，不丢字节
     final sb = StringBuffer();
     var i = 0;
     while (i < bytes.length) {
@@ -247,13 +269,20 @@ class TextWriter {
       if (i + 1 >= bytes.length) break;
       final code = (b << 8) | bytes[i + 1];
       final u = gbkDoubleByte[code];
-      if (u != null) sb.writeCharCode(u);
+      if (u != null) {
+        sb.writeCharCode(u);
+      } else {
+        sb.write('〔${code.toRadixString(16).toUpperCase().padLeft(4, '0')}〕');
+      }
       i += 2;
     }
     return sb.toString();
   }
 
   /// SJIS 解码（不 trim；控制码终止）。
+  ///
+  /// 码表外的双字节码对（引擎保留的特殊码，如 FE7/FE8 的 `80 20`）不跳过、
+  /// 而是编成 `〔8020〕` 占位符——回写时原样注入，不丢字节。
   String _decodeSjisNoTrim(Uint8List bytes) {
     final sb = StringBuffer();
     var i = 0;
@@ -273,7 +302,11 @@ class TextWriter {
       if (i + 1 >= bytes.length) break;
       final code = (b << 8) | bytes[i + 1];
       final u = sjisDoubleByte[code];
-      if (u != null) sb.writeCharCode(u);
+      if (u != null) {
+        sb.writeCharCode(u);
+      } else {
+        sb.write('〔${code.toRadixString(16).toUpperCase().padLeft(4, '0')}〕');
+      }
       i += 2;
     }
     return sb.toString();
@@ -325,12 +358,15 @@ class TextWriter {
     if (off < 0) {
       return const TextWriteResult(TextWriteMode.missing, message: '找不到该条目的指针');
     }
+    final ptrSlot = rom.textTableBase + id * 4;
+    final oldPtr = FeRom.u32(edit.buffer.data, ptrSlot);
     final orig = rom.decodeTextBytesAt(id);
     final origLen = orig.length;
 
     // 控制码占位还原 + 文本编码 → 目标原始字节
     final raw = TextControlCodec.encode(text, encode);
     if (raw == null) {
+      AppLog.instance.log('warn', '文本写回 #$id 未写入：有字符无法编码（旧 $origLen 字节）');
       return TextWriteResult(
         TextWriteMode.charNotEncodable,
         message: isHuffman
@@ -339,14 +375,20 @@ class TextWriter {
                 ? '有字符不在 GBK 码表里'
                 : '编码失败',
         originalBytes: origLen,
+        oldPointer: oldPtr,
+        newPointer: oldPtr,
       );
     }
     if (_sameList(orig, raw)) {
       return TextWriteResult(TextWriteMode.identical,
-          originalBytes: origLen, newBytes: raw.length);
+          originalBytes: origLen,
+          newBytes: raw.length,
+          oldPointer: oldPtr,
+          newPointer: oldPtr);
     }
 
-    // Huffman：用 ROM 自带树重新压缩 → 重定位写入（无法原地比较长度）
+    // Huffman：用 ROM 自带树重新压缩。
+    // 与原压缩流同长度（含同字节）→ 原地写，指针不动；变长才重定位。
     if (isHuffman) {
       if (!_encoder.available) {
         return TextWriteResult(TextWriteMode.unsupportedEngine,
@@ -354,58 +396,112 @@ class TextWriter {
       }
       final enc = _encoder.encodeBytes(raw);
       if (enc == null) {
+        AppLog.instance.log('warn', '文本写回 #$id 未写入：字符不在 Huffman 树里（旧 $origLen 字节）');
         return TextWriteResult(TextWriteMode.charNotEncodable,
-            message: '有字符不在该 ROM 的 Huffman 树里', originalBytes: origLen);
+            message: '有字符不在该 ROM 的 Huffman 树里',
+            originalBytes: origLen,
+            oldPointer: oldPtr,
+            newPointer: oldPtr);
+      }
+      final oldLen = MapWriter.compressedLengthOf(edit.buffer.data, off);
+      if (oldLen > 0 &&
+          enc.length == oldLen &&
+          _sameList(edit.buffer.data.sublist(off, off + oldLen), enc)) {
+        return TextWriteResult(TextWriteMode.identical,
+            originalBytes: origLen,
+            newBytes: enc.length,
+            oldPointer: oldPtr,
+            newPointer: oldPtr);
+      }
+      if (oldLen > 0 && enc.length < oldLen) {
+        // 变短：原地写 + 尾部归零，指针不动
+        edit.writeBytes(off, enc);
+        edit.writeBytes(
+            off + enc.length, List<int>.filled(oldLen - enc.length, 0));
+        AppLog.instance.log('info', '文本写回 #$id 原地(Huffman) ${origLen}→${enc.length}B，指针 0x${oldPtr.toRadixString(16)} 不变');
+        return TextWriteResult(TextWriteMode.shorter,
+            originalBytes: origLen,
+            newBytes: enc.length,
+            oldPointer: oldPtr,
+            newPointer: oldPtr);
       }
       if (!allowRelocate) {
+        AppLog.instance.log('warn', '文本写回 #$id 未写入：变长（$origLen → ${enc.length} 字节）且未允许重定位');
         return TextWriteResult(TextWriteMode.tooLong,
-            message: 'Huffman 文本需重定位写入',
+            message: '文本变长，未允许重定位',
             originalBytes: origLen,
-            newBytes: enc.length);
+            newBytes: enc.length,
+            oldPointer: oldPtr,
+            newPointer: oldPtr);
       }
       // 末尾多留 8 字节：解码器读末字节时要求 p+4 <= length
       final slot = _findFreeSlot(enc.length + 8);
       if (slot < 0) {
+        AppLog.instance.log('warn', '文本写回 #$id 未写入：找不到容纳 $enc.length 字节的空位');
         return TextWriteResult(TextWriteMode.tooLong,
             message: '找不到容纳 ${enc.length + 8} 字节的空位',
             originalBytes: origLen,
-            newBytes: enc.length);
+            newBytes: enc.length,
+            oldPointer: oldPtr,
+            newPointer: oldPtr);
       }
       edit.writeBytes(slot, enc);
       edit.writeBytes(slot + enc.length, const [0, 0, 0, 0, 0, 0, 0, 0]);
       _repoint(id, slot);
+      final newPtr = 0x08000000 + slot;
+      AppLog.instance.log('info', '文本写回 #$id 重定位 ${origLen}→${enc.length}B，'
+          '指针 0x${oldPtr.toRadixString(16)}→0x${newPtr.toRadixString(16)}（空位 0x${slot.toRadixString(16)}）');
       return TextWriteResult(TextWriteMode.relocated,
-          originalBytes: origLen, newBytes: enc.length, newOffset: slot);
+          originalBytes: origLen,
+          newBytes: enc.length,
+          newOffset: slot,
+          oldPointer: oldPtr,
+          newPointer: newPtr);
     }
 
     // 明文：等长 / 变短原地写，变长重定位
     if (raw.length <= origLen) {
       edit.writeBytes(off, raw);
       edit.writeBytes(off + raw.length, const [0x00]);
+      AppLog.instance.log('info', '文本写回 #$id 原地 ${origLen}→${raw.length}B，指针 0x${oldPtr.toRadixString(16)} 不变');
       return TextWriteResult(
         raw.length == origLen ? TextWriteMode.inPlace : TextWriteMode.shorter,
         originalBytes: origLen,
         newBytes: raw.length,
+        oldPointer: oldPtr,
+        newPointer: oldPtr,
       );
     }
     if (!allowRelocate) {
       return TextWriteResult(TextWriteMode.tooLong,
           message: '文本变长（$origLen → ${raw.length} 字节），未允许重定位',
           originalBytes: origLen,
-          newBytes: raw.length);
+          newBytes: raw.length,
+          oldPointer: oldPtr,
+          newPointer: oldPtr);
     }
     final slot = _findFreeSlot(raw.length + 1);
     if (slot < 0) {
+      AppLog.instance.log('warn', '文本写回 #$id 未写入：找不到容纳 ${raw.length + 1} 字节的空位');
       return TextWriteResult(TextWriteMode.tooLong,
           message: '找不到容纳 ${raw.length + 1} 字节的空位',
           originalBytes: origLen,
-          newBytes: raw.length);
+          newBytes: raw.length,
+          oldPointer: oldPtr,
+          newPointer: oldPtr);
     }
     edit.writeBytes(slot, raw);
     edit.writeBytes(slot + raw.length, const [0x00]);
     _repoint(id, slot);
+    final newPtr = 0x08000000 + slot;
+    AppLog.instance.log('info', '文本写回 #$id 重定位 ${origLen}→${raw.length}B，'
+        '指针 0x${oldPtr.toRadixString(16)}→0x${newPtr.toRadixString(16)}（空位 0x${slot.toRadixString(16)}）');
     return TextWriteResult(TextWriteMode.relocated,
-        originalBytes: origLen, newBytes: raw.length, newOffset: slot);
+        originalBytes: origLen,
+        newBytes: raw.length,
+        newOffset: slot,
+        oldPointer: oldPtr,
+        newPointer: newPtr);
   }
 
   /// 找一段空闲写入 [need] 字节。

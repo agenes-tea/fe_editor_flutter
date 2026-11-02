@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/editable_rom.dart';
+import '../core/text_coverage.dart';
 import '../core/text_writer.dart';
 
 /// 一次文本写入结果转成给用户看的提示语。
@@ -13,7 +14,10 @@ String textWriteMessage(TextWriteResult r) {
     case TextWriteMode.shorter:
       return '已原地写入（变短：${r.originalBytes} → ${r.newBytes} 字节）';
     case TextWriteMode.relocated:
-      return '文本变长，已写入空位 0x${r.newOffset.toRadixString(16)} 并重指指针';
+      final p = r.oldPointer >= 0
+          ? ' 0x${r.oldPointer.toRadixString(16)}→0x${r.newPointer.toRadixString(16)}'
+          : '';
+      return '文本变长，已写入空位 0x${r.newOffset.toRadixString(16)} 并重指指针$p';
     case TextWriteMode.tooLong:
       return r.message.isEmpty ? '文本过长，写入失败' : r.message;
     case TextWriteMode.unsupportedEngine:
@@ -71,9 +75,15 @@ Future<bool> showTextEditDialog(
   }
 
   final ctrl = TextEditingController(text: writer.currentText(textId) ?? '');
+  final checker = TextCoverageChecker(writer);
   final newText = await showDialog<String>(
     context: context,
-    builder: (ctx) => AlertDialog(
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) {
+        // 每敲一次就先查缺字：缺字不会让写入报错，只会让游戏里少几个字，
+        // 这是唯一能当场发现的时机。
+        final cov = checker.check(ctrl.text);
+        return AlertDialog(
       title: Text(title),
       content: SingleChildScrollView(
         child: Column(
@@ -87,12 +97,45 @@ Future<bool> showTextEditDialog(
               minLines: 1,
               maxLines: 6,
               style: const TextStyle(fontSize: 14, height: 1.4),
+              onChanged: (_) => setDialogState(() {}),
               decoration: const InputDecoration(border: OutlineInputBorder()),
             ),
+            if (!cov.ok) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.orange.shade300),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '这个 ROM 写不了：${cov.missing.join(' ')}',
+                      style: TextStyle(
+                          color: Colors.orange.shade900,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '这些字在游戏里会显示成空白。换成同义字，'
+                      '或换用字库更全的基底 ROM（烈火 Superxyj 汉化版 = 明文 GBK）。\n'
+                      '当前字库：${checker.charset.label}（${checker.charset.note}）',
+                      style: TextStyle(
+                          color: Colors.orange.shade900, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 8),
             Text(
               '等长/变短原地写入；变长写空位并重指指针；Huffman 文本重定位写入。\n'
-              '对话里的换行/按键/颜色等控制码以〔XX〕显示，保留它们即可（删掉即去掉该控制码）。',
+              '对话里的换行/按键/颜色等控制码以〔XX〕显示，保留它们即可（删掉即去掉该控制码）；\n'
+              '码表外的双字节特殊码（如 80 20）以〔8020〕显示，同样保留即可。',
               style: TextStyle(fontSize: 11, color: Theme.of(ctx).hintColor),
             ),
           ],
@@ -105,6 +148,8 @@ Future<bool> showTextEditDialog(
             onPressed: () => Navigator.pop(ctx, ctrl.text),
             child: const Text('保存')),
       ],
+        );
+      },
     ),
   );
   ctrl.dispose();

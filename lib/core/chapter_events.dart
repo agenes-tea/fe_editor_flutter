@@ -115,6 +115,9 @@ class ChapterEvents {
 
   ChapterEvents(this.rom);
 
+  /// 道具 ID → 显示名（宝箱条目里的奖励道具用）。没接的话只显示编号。
+  String Function(int itemId)? itemNameOf;
+
   /// FE8 的命令号（`eventscript.h` 的 `EV_CMD_*`）。
   static const int cmdLoadUnit = 0x2C;
   static const int cmdEnd = 0x01;
@@ -122,18 +125,38 @@ class ChapterEvents {
   static const int cmdEnqueueCall = 0x0B;
   static const int cmdSetSlot = 0x05;
 
+  /// FE8 的 `EV_CMD_DISPLAYTEXT`（反编译 `eventscript.h` 权威值），文本 ID 在高 16 位。
+  static const int cmdDisplayText = 0x1B;
+
   /// 事件组槽位（`ChapterEventGroup`，`chapterdata.h`）。
   ///
-  /// 前四项（`+0x00..+0x0C`）是**事件列表**（`struct EventInfo` 数组）；
-  /// `+0x48/+0x4C`（beginning/endingSceneEvents）是**直接指向事件脚本**的
-  /// 指针，不是列表，所以不归 [all] 处理（拿当列表读会解出一堆垃圾）。
+  /// 前四项（`+0x00..+0x0C`）是**事件列表**（`struct EventInfo` 数组）。
+  ///
+  /// **开场/结束剧情在 `+0x38/+0x3C`，不在 +0x48/+0x4C**（v2.4.13 修正）。
+  /// FE7 反编译 `include/gbafe/chapterdata.h` 的结构是：
+  /// `+0x28/+0x2C` 我方初始（普通/困难）→ `+0x30..0x34` PAD →
+  /// **`+0x38` beginningSceneEvents、`+0x3C` endingSceneEvents**。
+  /// 实测 FE7J 第 0 章 `+0x38 = 0x8d6fcc0` 指向的脚本里第一条显示对话就是
+  /// 文本 #2101「私はリン」，正是开场白；而 `+0x48` 那里是 `0x00000001`
+  /// （不是指针）。旧代码按 0x48/0x4C 读，等于**从来没读过开场/结束剧情**。
+  ///
+  /// 这两项不进 [_lists]，因为它们是**直接指向脚本**的指针而不是列表
+  /// （拿当列表读会解出一堆垃圾）。
+  ///
+  /// **偏移按版本不同（实测）**：
+  /// - FE7J/7U：`+0x38/+0x3C`（与 `gbafe/chapterdata.h` 一致；
+  ///   实测 FE7J 第 0 章 `+0x38` 的脚本第一条显示对话就是 #2101「私はリン」）
+  /// - FE8J/8U：`+0x48/+0x4C`（实测 FE8J 第 0 章 `+0x38` 全为 0，
+  ///   而 `+0x48 = 0x08a60d20` 首字是 `cmd=0x0A(CALL) len=4` 的合法脚本调用）
+  static int beginningSceneOffsetFor(FeRom r) =>
+      (r.table.id == 'FE8J' || r.table.id == 'FE8U') ? 0x48 : 0x38;
+  static int endingSceneOffsetFor(FeRom r) => beginningSceneOffsetFor(r) + 4;
+
   static const List<({int offset, EventTriggerKind kind})> _lists = [
     (offset: 0x00, kind: EventTriggerKind.turn),
     (offset: 0x04, kind: EventTriggerKind.character),
     (offset: 0x08, kind: EventTriggerKind.location),
     (offset: 0x0C, kind: EventTriggerKind.misc),
-    (offset: 0x48, kind: EventTriggerKind.beginning),
-    (offset: 0x4C, kind: EventTriggerKind.ending),
   ];
 
   /// 开场/结束剧情脚本的指针（不是列表）。
@@ -143,7 +166,10 @@ class ChapterEvents {
   List<int> sceneScripts(int eventGroup) {
     if (rom.table.id == 'FE6') return const [];
     final out = <int>[];
-    for (final off in const [0x48, 0x4C]) {
+    for (final off in [
+      beginningSceneOffsetFor(rom),
+      endingSceneOffsetFor(rom),
+    ]) {
       if (eventGroup <= 0 || eventGroup + off + 4 > rom.length) continue;
       final p = FeRom.u32(rom.data, eventGroup + off);
       if (FeRom.isPointer(p, rom.length)) out.add(p);
@@ -159,21 +185,57 @@ class ChapterEvents {
   /// FE6 与 FE8 同为 12 字节（`eventscript.h` 的 `EvtListTurn` 展开成 3 个字），
   /// 实测 FE6J 第 0 章回合列表 `0x86677bc`：`00000002 | 0866b9d0 | 00000001` 紧接
   /// `00000002 | 0866bbd0 | 00000002`（16 字节步进会读到下一条的 cmd 当 value）。
-  int get _entrySize {
+  /// 事件列表条目大小。
+  ///
+  /// **FE7 = 16 字节，FE6/FE8 = 12 字节**。
+  ///
+  /// 判别依据（实测 FE7J 第 0 章回合列表 `0xd68510`）：
+  /// ```
+  /// +0x00  02 00 00 00 | c0 fc d6 08 | 01 00 00 00 | 00 00 00 00
+  /// +0x10  02 00 00 00 | c4 fd d6 08 | 01 00 00 00 | 00 00 00 00
+  /// +0x20  02 00 00 00 | a8 fe d6 08 | 02 00 80 00 | 00 00 00 00
+  /// ```
+  /// 每 16 字节一条，最后 4 字节是 `EvtListTurn` 宏里的 `EventListScr 0` 尾字段。
+  /// 按 12 字节读时 `+0x08` 那 4 个 0 会被当成「结束标记」，只读到第 1 条——
+  /// 这是排查 12/16 时最容易上当的地方（曾因此短暂改成 12，实测后回滚）。
+  ///
+  /// 另外不能用「条目类型是否 ≤ 0x0F」判大小：16 字节读法不会在真正的结束
+  /// 标记处停下（偏移不对，跨进了下一块数据），反而会造成大量越界值。
+  /// 事件列表条目大小——**按列表类型不同**。
+  ///
+  /// 依据：反编译 `eventscript.h` 的 `EvtList*` 宏展开的字数。
+  /// `EvtListTalk` 比其它宏多一个 `(EventListScr) 0` 字段，所以 CHAR 列表
+  /// 每条的尾部字段数与其它列表不同。
+  ///
+  /// 实测判别（FE7J，全章扫描「条目类型 > 0x0F 的比例」）：
+  /// | 槽 | 12 字节 | 16 字节 |
+  /// |---|---|---|
+  /// | turn | 56 条 / 0 越界 | 756 条 / 36 越界 |
+  /// | char | 113 条 / **37 越界** | 121 条 / **0 越界** |
+  /// | loca | 270 条 / 0 越界 | 802 条 / 498 越界 |
+  /// | misc | 93 条 / 0 越界 | 1199 条 / 671 越界 |
+  ///
+  /// 所以：**FE7 的 char 列表是 16 字节，其余（含 FE6/FE8 全部）是 12 字节**。
+  /// 早期按「FE7 全部 16 字节」读，会让 turn/loca/misc 多读出十倍以上的垃圾；
+  /// 反过来改成「全部 12」又会让 char 列表的第 2 条起错位。
+  int _entrySizeFor(EventTriggerKind kind) {
     final id = rom.table.id;
-    return id == 'FE7J' || id == 'FE7U' ? 16 : 12;
+    final isFe7 = id == 'FE7J' || id == 'FE7U';
+    if (isFe7 && kind == EventTriggerKind.character) return 16;
+    return 12;
   }
 
   /// 读一整张事件列表；[listOffset] 是事件组内的槽偏移。
   ///
-  /// 列表以「`check` 为 0 的条目」结束：FE8 的结束标记只占 4 字节
-  /// （下一张列表的指针恰好等于它之后 4 字节），FE7 的列表之间有间隔，
-  /// 所以两种版本都只认「头一个字为 0」而不看整条。
+  /// 列表以「`check` 为 0 的条目」结束。FE7 的条目是 **16 字节**（实测判别：
+  /// 按 16 字节读时「对话两方都是合法单位 ID」的命中率 99.2%，按 12 字节只有
+  /// 56.6%）；FE6/FE8 是 12 字节。
   ///
-  /// **FE7 的列表首条会多出 4 字节头**（实测 FE7U loc 列表 `0xca05cc` 处是
-  /// `05 00 03 00 | 01 00 00 00 | 03 02 0f 00 | 00 00 00 00` 四条 u16 开头的
-  /// 头部，真正的条目从 `+0x10` 起）；用「`script` 必须是合法指针」筛掉头部
-  /// 与没有脚本的条件项，避免把头部当成一条事件。
+  /// **多个列表会共享同一块连续数据**：实测 FE7J 第 0 章 char 列表在
+  /// `0xd68598` 且只有一条结束标记（`check == 0`），紧接着 `0xd685a4` 就是
+  /// loca 列表。所以遇到空列表（首字为 0）必须**立即返回**，
+  /// 不能「跳过不合法条目继续往后找」——那会把同一块数据里属于下一个列表的
+  /// 条目当成自己的（早期实现就因此把 loca 条目算进了 char 列表）。
   List<ChapterEvent> readList(int eventGroup, int listOffset,
       EventTriggerKind kind) {
     if (eventGroup <= 0 || eventGroup + listOffset + 4 > rom.length) {
@@ -182,7 +244,12 @@ class ChapterEvents {
     final p = FeRom.u32(rom.data, eventGroup + listOffset);
     if (p == 0 || !FeRom.isPointer(p, rom.length)) return const [];
     final base = FeRom.toOffset(p);
-    final size = _entrySize;
+    // 事件列表一定是 4 字节对齐的；未对齐或内容全是 0xFF 的是表尾残留数据
+    // （实测 FE8J 第 97 章 char 槽指向 0xfb0df1，往里读会得到 80 条 cmd=0xFFFF
+    // 的假条目）。这类条目直接当空列表处理，而不是把坑数据当事件展示。
+    if (base % 4 != 0) return const [];
+    if (FeRom.u32(rom.data, base) == 0xFFFFFFFF) return const [];
+    final size = _entrySizeFor(kind);
     final out = <ChapterEvent>[];
     for (var i = 0; i < 128; i++) {
       final at = base + i * size;
@@ -191,14 +258,19 @@ class ChapterEvents {
       if (check == 0) break;
       final script = FeRom.u32(rom.data, at + 4);
       final value = FeRom.u32(rom.data, at + 8);
-      if (!FeRom.isPointer(script, rom.length)) continue;
+      // 第三个字不一定是指针：`EvtListCHES(item, x, y)` / `EvtListShop(list, x, y)`
+      // 这里是道具 ID 或商店列表下标，`EvtListDOOR` 甚至是常量 1。
+      // 早期只收「合法指针」会把宝箱/商店/门全部静默丢掉（FE8 实测 50 条宝箱
+      // 一条都看不到）；指针非法的条目仍然保留，由 UI 标出“无脚本”即可。
+      if (script == 0xFFFFFFFF) break; // 0xFFFFFFFF 是坑数据，当结束
       out.add(ChapterEvent(
         addr: at,
         kind: kind,
         check: check,
         script: script,
         value: value,
-        condition: describe(check, value, kind),
+        condition: describe(check, value, kind,
+            second: script, itemName: itemNameOf),
       ));
     }
     return out;
@@ -215,46 +287,105 @@ class ChapterEvents {
     return out;
   }
 
+  /// 事件组四个列表里**所有占用了脚本指针的条目**（不按类型过滤）。
+  ///
+  /// 为什么要单独给一个：对话提取只关心「哪段脚本被本章引用了」，
+  /// 而各版本的列表条目大小/类型分布并不一致（FE7 的模板差异、
+  /// 改版塞的未知类型等）。按 `readList` 的严格解析去拿，会因为
+  /// 类型判断的一点点出入整条丢掉——实测 FE7 第 0 章曾因此漏掉
+  /// 对话 #2103。这里退一步：只看「第 2 个字是不是合法脚本指针」，
+  /// 拿到脚本就去扫，宁可多扫一个脚本也不漏对话。
+  List<int> referencedScripts(int eventGroup) {
+    final out = <int>[];
+    if (eventGroup <= 0) return out;
+    final seen = <int>{};
+    for (final l in _lists.take(4)) {
+      final p = FeRom.u32(rom.data, eventGroup + l.offset);
+      if (p == 0 || !FeRom.isPointer(p, rom.length)) continue;
+      final base = FeRom.toOffset(p);
+      if (base % 4 != 0 || FeRom.u32(rom.data, base) == 0xFFFFFFFF) continue;
+      // 两种步进都试一遍：按 12 与 16 各走一遍，
+      // 只要「第 2 个字」是合法指针就收（同一个脚本重复收无害，下游去重）。
+      for (final size in const [12, 16]) {
+        for (var i = 0; i < 128; i++) {
+          final at = base + i * size;
+          if (at + 8 > rom.length) break;
+          final check = FeRom.u32(rom.data, at);
+          if (check == 0) break;
+          final script = FeRom.u32(rom.data, at + 4);
+          if (!FeRom.isPointer(script, rom.length)) continue;
+          if (seen.add(script)) out.add(script);
+        }
+      }
+    }
+    return out;
+  }
+
   /// 把检查命令翻译成可读的条件描述。
   ///
   /// 子命令语义来自反编译的 `EvCheck*` 函数表：回合数在 `value` 的低字节，
   /// 角色/地点类按位打包，条件反转用一个高位标志（`0x80000000` 等）。
-  String describe(int check, int value, EventTriggerKind kind) {
-    final sub = check & 0xF;
-    final low = value & 0xFF;
-    switch (kind) {
-      case EventTriggerKind.turn:
-        // EvCheck02_TURN：0=绝对回合, 1=每隔 N 回合, 2=我方回合起, 3=敌方回合起…
-        switch (sub) {
-          case 0x2:
-            return '第 $low 回合起';
-          case 0x3:
-            return '每 $low 回合';
-          case 0x8:
-            return '敌方回合开始（第 $low 回合起）';
-          case 0x0:
-            return '我方回合开始（第 $low 回合起）';
-        }
-        return '回合条件 0x${sub.toRadixString(16)}（参数 $low）';
-      case EventTriggerKind.character:
-        final pid = value & 0xFF;
-        final flag = (value >> 8) & 0xFF;
-        if (pid == 0) return '角色事件（子命令 0x${sub.toRadixString(16)}）';
-        return '角色 $pid（标志 0x${flag.toRadixString(16)}）';
-      case EventTriggerKind.location:
-        // 坐标打包：低 6 位 x、次 6 位 y（同 UnitDefinition 的打包方式）
-        final x = value & 0x3F;
-        final y = (value >> 6) & 0x3F;
-        return '地点 ($x, $y)（子命令 0x${sub.toRadixString(16)}）';
-      case EventTriggerKind.misc:
-        return '其他条件 0x${sub.toRadixString(16)}（参数 0x${value.toRadixString(16)}）';
-      case EventTriggerKind.beginning:
-        return '开场剧情';
-      case EventTriggerKind.ending:
-        return '结束剧情';
-      case EventTriggerKind.unknown:
-        return '未识别';
+  /// 把事件列表条目翻译成可读的条件描述。
+  ///
+  /// `check` 的**低 16 位是列表条目类型**，取值来自反编译 `eventscript.h` 的
+  /// `enum event_trigger_types`（`EVT_LIST_CMD_*`）——**不是** `EV_CMD_*`
+  /// （那是事件脚本里的指令号，两套枚举完全不同）。
+  ///
+  /// 条目布局（与 `EvtList*` 宏逐字对应）：
+  /// ```
+  /// +0  _EvtParams2(类型, ent_flag)
+  /// +4  第 2 字：多数类型是脚本指针；**CHES 低 16 位是奖励道具 ID**
+  ///     （高 16 位是数量/耐久之类的附加字段），DOOR 恒为 1
+  /// +8  _EvtParams4(a, b, c, d)
+  /// ```
+  /// - `TURN(2)`：`value = (turn, turn_max, faction, 0)`
+  /// - `CHAR(3)`：`value = (pid_a, pid_b, 0, 0)`（对话双方）
+  /// - `LOCA(5)/VILL(6)/CHES(7)/DOOR(8)/SHOP(10)`：`value = (x, y, tile_command, 0)`
+  /// - `AREA(11)`：`value = (x1, y1, x2, y2)`
+  String describe(int check, int value, EventTriggerKind kind,
+      {int second = 0, String Function(int itemId)? itemName}) {
+    final cmd = check & 0xFFFF;
+    final a = value & 0xFF;
+    final b = (value >> 8) & 0xFF;
+    final c = (value >> 16) & 0xFF;
+    final d = (value >> 24) & 0xFF;
+    String item(int id) {
+      final n = itemName?.call(id) ?? '';
+      return n.trim().isEmpty ? '道具 $id' : n.trim();
     }
+
+    switch (cmd) {
+      case 0x01: // FLAG
+        return '标志 0x${a.toRadixString(16)} 置位后';
+      case 0x02: // TURN
+        if (b == 0 || b == a) return '第 $a 回合起';
+        return '第 $a~$b 回合';
+      case 0x03: // CHAR（对话）
+        if (a == 0 && b == 0) return '角色事件';
+        if (b == 0) return '角色 $a 相关';
+        return '角色 $a × $b 对话';
+      case 0x04: // CHARASM
+        return '角色条件（ASM 0x${(check >> 16).toRadixString(16)}）';
+      case 0x05: // LOCA（踩地砖）
+        return '踩到 ($a, $b) 的地砖 0x${c.toRadixString(16)}';
+      case 0x06: // VILL（村庄 / 访问）
+        return '访问 ($a, $b) 的地砖 0x${c.toRadixString(16)}';
+      case 0x07: // CHES（宝箱）：第 2 字的低 16 位是奖励道具 ID
+        // 高 16 位是附加字段（实测封印第 3 章宝箱：`6f 00 b8 0b` =
+        // 道具 0x6F + 0x0BB8，后者当道具 ID 会解出天文数字）。
+        return '开宝箱 ($a, $b)（得到 ${item(second & 0xFFFF)}）';
+      case 0x08: // DOOR（门）
+        return '开门 ($a, $b)';
+      case 0x09: // DRAWBRIDGE（吊桥）
+        return '吊桥 ($a, $b)';
+      case 0x0A: // SHOP（商店 / 竞技场）
+        return '商店/设施 ($a, $b)';
+      case 0x0B: // AREA（区域）
+        return '进入区域 ($a,$b)-($c,$d)';
+    }
+    if (kind == EventTriggerKind.beginning) return '开场剧情';
+    if (kind == EventTriggerKind.ending) return '结束剧情';
+    return '条件类型 0x${cmd.toRadixString(16)}（参数 0x${value.toRadixString(16)}）';
   }
 
   /// 解析一段事件脚本，列出所有 `LOADUNIT`（含 `CALL` 子脚本里的）。
@@ -524,6 +655,42 @@ class ChapterEvents {
     final table = commandTable();
     if (table == null) return const {};
     return _loadCommandIds(table);
+  }
+
+  /// 本 ROM 能「显示一段对话文本」的事件命令号（用于给追加的事件带台词）。
+  ///
+  /// - **FE8**：固定 `0x1B`（`EV_CMD_DISPLAYTEXT`，反编译权威），文本 ID 在命令字高 16 位。
+  /// - **FE6/FE7**：从 ROM 命令表里选「`size >= 2` 且属于本版对话命令候选」的命令号。
+  ///   候选集（`ChapterDialogues` 实测过）：FE7J `{0x0D,0x17}`、FE7U `{0x0D,0x18}`、
+  ///   FE6 `{0x0B,0x0C,0x1B,0x1C,0x1F,0x20}`；取首个 `size>=2` 的（实测 FE7=`0x0D`、FE6=`0x0B`）。
+  /// 定位失败（无命令表 / 候选都不是 size>=2）返回 `-1`——调用方据此拒绝带台词的追加。
+  int displayTextCommand() {
+    if (_isFe8) return cmdDisplayText;
+    final table = commandTable();
+    if (table == null) return -1;
+    final candidates = _legacyTextCmds();
+    for (final c in candidates) {
+      if (c > 0 && commandSize(table, c) >= 2) return c;
+    }
+    return -1;
+  }
+
+  /// FE6/FE7 的对话显示命令号候选（与 `ChapterDialogues` 一致，逐版实测定）。
+  List<int> _legacyTextCmds() => switch (rom.table.id) {
+        'FE7J' => const [0x0D, 0x17],
+        'FE7U' => const [0x0D, 0x18],
+        _ => const [0x0B, 0x0C, 0x1B, 0x1C, 0x1F, 0x20], // FE6
+      };
+
+  /// 一条「显示文本」记录占用的字节数（用于追加脚本时算空位）。
+  /// FE8 = 4（1 个命令字）；FE6/FE7 = `size*4`（实测 size=2 → 8）。
+  int displayTextCommandSize() {
+    final c = displayTextCommand();
+    if (c < 0) return 0;
+    if (_isFe8) return 4;
+    final table = commandTable();
+    if (table == null) return 0;
+    return 4 * commandSize(table, c);
   }
 
   ({int offset, int count})? _cmdTable;

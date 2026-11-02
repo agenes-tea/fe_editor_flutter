@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- MCP 服务器要在本机开监听端口。即使只绑 127.0.0.1，Android 的权限检查
+         也在 socket() 系统调用层，没有这条权限会直接 EPERM。
+         属于 normal 级权限，安装时自动授予，不会弹窗。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="纹章修改器"
         android:name="${applicationName}"
@@ -25,6 +29,17 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 分享 ROM 给模拟器（「用模拟器打开」）：把缓存目录里的 .gba 包成
+             content URI。androidx FileProvider，路径只开放 cacheDir/。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="androidx.core.content.FILE_PROVIDER_PATHS"
+                android:resource="@xml/share_paths" />
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -40,6 +55,15 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- 分享 ROM 时要知道系统里有没有能接的模拟器（包可见性白名单） -->
+        <intent>
+            <action android:name="android.intent.action.SEND"/>
+            <data android:mimeType="application/x-gba-rom"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND"/>
+            <data android:mimeType="application/octet-stream"/>
         </intent>
     </queries>
 </manifest>

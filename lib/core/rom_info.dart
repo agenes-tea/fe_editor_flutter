@@ -335,6 +335,9 @@ class ItemOffsets {
   static const nameTextId = 0;
   static const descTextId = 2;
 
+  /// 使用介绍（装备/使用时的 Help 文本，与 descTextId 同空间）。
+  static const useDescTextId = 4;
+
   /// item ID（u8），从 0 开始连续递增（ID 0 是空槽）。
   static const itemId = 6;
 
@@ -344,7 +347,8 @@ class ItemOffsets {
   /// attributes 标志位（**u32**），位含义见 `ItemFlags`。
   static const attributes = 8;
 
-  /// 数值加成表指针（12 字节）。
+  /// 数值加成表指针（9 × s8，反编译 `struct ItemStatBonuses`：
+  /// HP/攻/技/速/防/魔防/运/移动/体格，**有符号**，可为负值）。
   static const statBonusPointer = 12;
 
   /// 克制职业 ID 列表指针（该武器对这些职业有额外伤害，非装备限制）。

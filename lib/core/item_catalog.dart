@@ -257,6 +257,12 @@ class ItemEntry {
   /// 名字文本 id。
   final int nameTextId;
 
+  /// 介绍文本 id（+2，游戏 Help 键那一段）。
+  final int descTextId;
+
+  /// 使用介绍文本 id（+4，游戏里按 A 使用那一段）。
+  final int useDescTextId;
+
   /// 种类（+7）。
   final ItemKind kind;
 
@@ -321,6 +327,8 @@ class ItemEntry {
     required this.id,
     required this.address,
     required this.nameTextId,
+    required this.descTextId,
+    required this.useDescTextId,
     required this.kind,
     required this.flags,
     required this.durability,
@@ -362,10 +370,13 @@ class ItemEntry {
   bool get hasDurability => durability > 0;
 }
 
-/// 数值加成表（item 表 +12 指向，12 字节）。
+/// 数值加成表（item 表 +12 指向，9 × **s8**）。
 ///
-/// 顺序与 FEBuilderGBA `ItemStatBonusesForm.GetValues` 一致：
-/// HP / 攻击 / 技巧 / 速度 / 防御 / 魔防 / 幸运 / 移动 / 体力
+/// 反编译 `struct ItemStatBonuses`（fe6 `item.h` / fe8u `bmitem.h`）：
+/// 顺序与 FEBuilderGBA 一致：HP/攻/技/速/防/魔防/运/移动/体格，
+/// **全部有符号**（可以为负，按 u8 读会把 -5 读成 251）。
+/// 持有该武器时加到持有者的对应属性上（游戏状态面板里
+/// 绿色的 +N 就是它，战斗结算也用它）。
 class ItemStatBonuses {
   final int hp;
   final int str;
@@ -402,7 +413,10 @@ class ItemStatBonuses {
       move == 0 &&
       body == 0;
 
-  /// 有增益的条目（用于 UI 展示）。
+  /// 全部 9 个值（顺序 = 表内顺序），战斗模拟用来加到攻方身上。
+  List<int> get values => [hp, str, skill, speed, def, res, luck, move, body];
+
+  /// 有增减的条目（用于 UI 展示，负值也列出）。
   List<(String, int)> get entries {
     final out = <(String, int)>[];
     void add(String label, int v) {
@@ -417,9 +431,39 @@ class ItemStatBonuses {
     add('魔防', res);
     add('幸运', luck);
     add('移动', move);
-    add('体力', body);
+    add('体格', body);
     return out;
   }
+
+  /// 展示用文案：`防御+5 魔防+5`；无加成时 ''。
+  String get summaryText => entries
+      .map((e) => '${e.$1}${e.$2 > 0 ? '+${e.$2}' : e.$2}')
+      .join(' ');
+}
+
+/// 道具的一个「专用锁定」：item attributes 的 IA_LOCK_* 位，
+/// 以及角色表 attributes u32@+0x28 里对应的 CA_LOCK_* 位。
+class ItemLock {
+  /// item 侧的位号（`flags.raw` 的 bit）。
+  final int bit;
+
+  /// 含义（按作品不同，见 [ItemCatalog.lockInfo]）。
+  final String label;
+
+  /// 角色表 attributes u32@+0x28 里对应的位号。
+  final int unitBit;
+
+  /// 角色表里静态带此位的角色索引（游戏内可能由事件动态授予，
+  /// 所以这个列表可能比实际能用的角色少——原版 FE6 里 Roy/Myrmidon
+  /// 的位是游戏过程中才拿到的，静态表只有 Zephia）。
+  final List<int> holders;
+
+  const ItemLock({
+    required this.bit,
+    required this.label,
+    required this.unitBit,
+    required this.holders,
+  });
 }
 
 /// 道具表读取。
@@ -460,6 +504,8 @@ class ItemCatalog {
       id: id,
       address: at,
       nameTextId: _u16(at),
+      descTextId: _u16(at + ItemOffsets.descTextId),
+      useDescTextId: _u16(at + ItemOffsets.useDescTextId),
       kind: ItemKind.fromRaw(_u8(at + ItemOffsets.kind)),
       flags: ItemFlags.fromRaw(_u32(at + ItemOffsets.attributes)),
       durability: _u8(at + ItemOffsets.durability),
@@ -489,18 +535,22 @@ class ItemCatalog {
     final p = e.statBonusPointer;
     if (p == 0) return ItemStatBonuses.empty;
     final o = p & 0x1FFFFFF;
-    if (o + 12 > rom.length) return ItemStatBonuses.empty;
-    int v(int k) => rom.data[o + k];
+    if (o + 9 > rom.length) return ItemStatBonuses.empty;
+    int s8(int k) {
+      final v = rom.data[o + k];
+      return v >= 0x80 ? v - 0x100 : v;
+    }
+
     return ItemStatBonuses(
-      v(0),
-      v(1),
-      v(2),
-      v(3),
-      v(4),
-      v(5),
-      v(6),
-      v(7),
-      v(8),
+      s8(0),
+      s8(1),
+      s8(2),
+      s8(3),
+      s8(4),
+      s8(5),
+      s8(6),
+      s8(7),
+      s8(8),
     );
   }
 
@@ -520,6 +570,74 @@ class ItemCatalog {
       out.add(v);
     }
     return out;
+  }
+
+  /// 道具的「专用角色」锁定位（attributes u32 的 IA_LOCK_*）。
+  ///
+  /// 反编译依据（fireemblem6j `item.c` 的 `CanUnitUseWeapon`）：
+  /// item 带 IA_LOCK_* 时，角色表 `attributes` u32@+0x28 必须带对应
+  /// CA_LOCK_* 位才能装备（FE6 单位表 bit16..19 = 主角 King 系/Myrmidon 系/
+  /// 龙系/Zephia 系，FE7/8 叫 CA_LOCK_1..7；位号对应见下）。
+  /// **锁定 ≠ 不能拿**：这些位也可以由事件授予主角（原版 FE6 静态表里
+  /// 只有 Zephia 一条，Roy/Myrmidon 是游戏过程中拿到的位）。
+  List<ItemLock> lockInfo(ItemEntry e) {
+    // item 位 → 角色表位（10..13 对 16..19，18..21 对 28..31）
+    const itemToUnitBit = {
+      10: 18,
+      11: 16,
+      12: 17,
+      13: 19,
+      18: 28,
+      19: 29,
+      20: 30,
+      21: 31,
+    };
+    final names = _lockLabels(rom.table.id);
+    final out = <ItemLock>[];
+    for (final m in itemToUnitBit.entries) {
+      if (e.flags.raw & (1 << m.key) == 0) continue;
+      final holders = <int>[];
+      final ubase = rom.unitBase;
+      if (ubase >= 0) {
+        for (var i = 0; i < rom.unitCount; i++) {
+          final at = ubase + i * rom.table.unitDataSize + 0x28;
+          if (at + 4 > rom.length) break;
+          if ((_u32(at) & (1 << m.value)) != 0) holders.add(i);
+        }
+      }
+      out.add(
+        ItemLock(
+          bit: m.key,
+          label: names[m.key] ?? 'LOCK',
+          unitBit: m.value,
+          holders: holders,
+        ),
+      );
+    }
+    return out;
+  }
+
+  /// 锁定位的含义按作品不同：FE6 有主角系名字（反编译枚举 LOCK_ROY 等），
+  /// FE7/8 是通用 LOCK_0..7（反编译头文件只给了 LOCK_3 = 龙/魔物）。
+  Map<int, String> _lockLabels(String tableId) {
+    if (tableId == 'FE6') {
+      return {
+        10: '龙专用',
+        11: '主角 King 系（Roy）专用',
+        12: 'Myrmidon 系专用',
+        13: 'Zephia 系专用',
+      };
+    }
+    return {
+      10: '龙/魔物专用',
+      11: 'LOCK_1 专用',
+      12: 'LOCK_2 专用',
+      13: 'LOCK_0 专用',
+      18: 'LOCK_4 专用',
+      19: 'LOCK_5 专用',
+      20: 'LOCK_6 专用',
+      21: 'LOCK_7 专用',
+    };
   }
 
   /// 按大类分组的条目。

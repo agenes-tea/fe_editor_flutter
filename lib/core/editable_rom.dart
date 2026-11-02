@@ -5,6 +5,7 @@ import 'item_catalog.dart';
 import 'rom_buffer.dart';
 import 'rom_info.dart';
 import 'support.dart';
+import 'zh_table.dart';
 
 /// 可编辑字段的元数据。
 class EditField {
@@ -322,12 +323,29 @@ class EditableRom {
   /// 读**实时 buffer** 的 ROM 视图（与 [buffer] 同一份数组）。
   /// 文本/名字被修改后，页面靠它拿到最新值——不能拿 [rom]（那是原始快照，
   /// 改了名字仍显示旧值；同时扫描类逻辑必须用原始快照，两者分离）。
-  late final FeRom liveRom = FeRom(buffer.data, rom.table);
+  ///
+  /// **中文码表要跟着传过来**：汉化版是靠 `zhTable` 才能解码/编码的，
+  /// 码表挂在 [rom] 上（打开 ROM 后由 `RomSession.attachZhTableIfNeeded` 设置），
+  /// `liveRom` 不继承的话会表现为「汉化版读不出中文、文本写入被判成不支持」。
+  ///
+  /// 不能写成 `late final`：码表是打开 ROM **之后**才挂上去的
+  /// （`RomSession.attachZhTableIfNeeded`），`late final` 一旦求值就固化了，
+  /// 之后挂的码表不会生效。所以每次访问都同步一次（代价只是一个字段赋值）。
+  FeRom get liveRom => _liveRom..zhTable = rom.zhTable;
+  late final FeRom _liveRom;
+
+  /// 设置/更新中文码表，同时作用到快照与实时视图。
+  void attachZhTable(ZhTable? table) {
+    rom.zhTable = table;
+    _liveRom.zhTable = table;
+  }
 
   final List<ByteEdit> edits = [];
 
   EditableRom._(this.rom, this.original) {
     buffer = RomBuffer(Uint8List.fromList(original));
+    // liveRom 与 buffer **共用同一份数组**，写入立即可见
+    _liveRom = FeRom(buffer.data, rom.table)..zhTable = rom.zhTable;
     _support = SupportTable(rom);
   }
 
@@ -424,6 +442,25 @@ class EditableRom {
   /// 返回实际改了几个字节（0 表示内容相同、未写入）。
   int writeBytes(int offset, List<int> bytes) =>
       writeInstruction(offset, bytes);
+
+  /// 把 [slot] 处的 u32 指针改写为指向文件偏移 [target]。
+  ///
+  /// 与手写 4 个字节的区别在于**语义与校验**：这里只接受 < 32MB 的偏移
+  /// （`FeRom.toOffset` 只保留 25 位，超出会指到错的地址），越界返回 false。
+  /// 反向改动（重定位回原处）也走这里，所以撤销能一并还原。
+  bool writePointer(int slot, int target) {
+    const limit = 0x02000000;
+    if (target < 0 || target >= limit) return false;
+    if (!buffer.inRange(slot, 4)) return false;
+    final gba = 0x08000000 + target;
+    return writeBytes(slot, [
+          gba & 0xFF,
+          (gba >> 8) & 0xFF,
+          (gba >> 16) & 0xFF,
+          (gba >> 24) & 0xFF,
+        ]) >
+        0;
+  }
 
   /// 设置 u32 字段里的某一个标志位（只改这一位，其余位原样保留）。
   ///

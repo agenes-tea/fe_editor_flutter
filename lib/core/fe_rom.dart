@@ -544,6 +544,17 @@ class FeRom {
     return fe8FormalNames[id] ?? raw;
   }
 
+  /// 角色介绍（单位表 +2 的 descTextId 指向的文本；游戏内 Help 键那一段）。
+  /// 空条目/没挂文本引擎时返回 ''，不抛异常。
+  String unitDescription(int index) {
+    final base = unitBase;
+    if (base < 0) return '';
+    final addr = base + index * table.unitDataSize;
+    if (addr + 4 > length) return '';
+    final id = u16(data, addr + UnitOffsets.descTextId);
+    return id == 0 ? '' : decodeText(id);
+  }
+
   // ---------- 表边界 ----------
   //
   // 判停规则照搬 FEBuilderGBA 的 InputFormRef callback，否则会把表后面的
@@ -636,6 +647,26 @@ class FeRom {
     final addr = base + index * table.itemDataSize;
     if (addr + 2 > length) return '';
     return decodeText(u16(data, addr + ItemOffsets.nameTextId));
+  }
+
+  /// 职业介绍（职业表 +2 的 descTextId；游戏内 Help 键那一段）。
+  String classDescription(int index) =>
+      _descriptionAt(index, ClassOffsets.descTextId, table.classDataSize, classBase);
+
+  /// 道具介绍（道具表 +2）与使用介绍（道具表 +4，游戏里 A 键那一段）。
+  String itemDescription(int index) =>
+      _descriptionAt(index, ItemOffsets.descTextId, table.itemDataSize, itemBase);
+
+  String itemUseDescription(int index) =>
+      _descriptionAt(index, ItemOffsets.useDescTextId, table.itemDataSize, itemBase);
+
+  /// 按表读 u16 文本 id 再解码；无文本引擎/空条目返回 ''。
+  String _descriptionAt(int index, int textIdOffset, int entrySize, int base) {
+    if (base < 0) return '';
+    final addr = base + index * entrySize;
+    if (addr + textIdOffset + 2 > length) return '';
+    final id = u16(data, addr + textIdOffset);
+    return id == 0 ? '' : decodeText(id);
   }
 
   /// 该职业的 `nameTextId`；越界返回 -1。

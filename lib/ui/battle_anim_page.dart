@@ -19,19 +19,8 @@ class _BattleAnimImageCache {
   static const int _limit = 48;
   final _images = <int, ui.Image>{};
 
-  int _romTag = 0;
-
-  void bindRom(int romTag) {
-    if (_romTag == romTag) return;
-    _romTag = romTag;
-    for (final img in _images.values) {
-      img.dispose();
-    }
-    _images.clear();
-  }
-
-  int keyFor(int animId, int mode, int frame, int paletteGroup) {
-    return (_romTag & 0xFFFF) * 0x1000000 +
+  int keyFor(int romTag, int animId, int mode, int frame, int paletteGroup) {
+    return (romTag & 0xFFFF) * 0x1000000 +
         (animId & 0xFFF) * 0x1000 +
         (mode & 0xF) * 0x100 +
         (frame & 0xFF) * 0x4 +
@@ -71,12 +60,6 @@ class BattleAnimListPage extends StatefulWidget {
 class _BattleAnimListPageState extends State<BattleAnimListPage> {
   late final BattleAnimReader _reader = BattleAnimReader(widget.edit.rom);
   String _filter = '';
-
-  @override
-  void initState() {
-    super.initState();
-    _BattleAnimImageCache.instance.bindRom(widget.edit.rom.fingerprint);
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -358,6 +341,7 @@ class _BattleAnimDetailPageState extends State<BattleAnimDetailPage> {
             : FutureBuilder<ui.Image>(
                 future: _BattleAnimImageCache.instance.load(
                   _BattleAnimImageCache.instance.keyFor(
+                    widget.edit.rom.fingerprint,
                     _entry.id,
                     _modeIndex,
                     _frameIndex,

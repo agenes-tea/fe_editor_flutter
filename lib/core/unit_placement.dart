@@ -236,6 +236,21 @@ class UnitPlacement {
   /// `ChapterEventInfo`（4 个事件列表 + 红/蓝单位 + 过关脚本）。
   /// 照 FE7/FE8 的 plist 读会拿到别的结构（实测 FE6 第 1 章读出 50 条
   /// 「地点事件」，script 指到图形数据）。
+  /// 章节标题文本（与游戏标题卡副标题一致，如「脱出行」）；
+  /// 不可用时返回空串（FE6 章节条目只有 68 字节，没有标题字段）。
+  ///
+  /// 注意本工具章节下标是 0 基：游戏内「第 1 章」通常就是这里的第 0 章。
+  /// 展示标题是为了让内容与游戏逐字对上，避免「编号差一章」的困惑。
+  String chapterTitle(int chapter) {
+    if (chapter < 0 || chapter >= chapterCount) return '';
+    if (_settingSize < 0x72) return '';
+    final at = settingBase + _settingSize * chapter;
+    if (at + 0x72 > _d.length) return '';
+    final id = _u16(at + 0x70);
+    if (id == 0 || edit.rom.textEntryOffset(id) < 0) return '';
+    return edit.rom.decodeText(id).trim();
+  }
+
   int eventGroupOffset(int chapter) {
     if (chapter < 0 || chapter >= chapterCount) return -1;
     if (_isFe6) return _fe6EventGroupOffset(chapter);

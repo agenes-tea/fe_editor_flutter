@@ -42,6 +42,8 @@ void main() {
             preset.target == CheatTarget.battleRule) {
           continue;
         }
+        // 组合预设不写自己的 values（按子项逐个应用），子项字段由它们自己保证
+        if (preset.combo != null) continue;
         final fields = switch (preset.target) {
           CheatTarget.unit => unitEditableFieldsFor(fe6: false),
           CheatTarget.classTable => classEditableFieldsFor(fe6: false),

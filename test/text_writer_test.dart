@@ -102,6 +102,8 @@ void main() {
       expect(r.mode, TextWriteMode.inPlace);
       expect(r.originalBytes, 2);
       expect(r.newBytes, 2);
+      expect(r.oldPointer, ptrBefore);
+      expect(r.newPointer, ptrBefore, reason: '原地写不该动指针');
       expect(w.currentText(id), replacement);
       // 指针没有被改动
       expect(edit.buffer.u32(w.rom.textTableBase + id * 4), ptrBefore);
@@ -117,6 +119,7 @@ void main() {
       expect(r.mode, TextWriteMode.shorter);
       expect(r.originalBytes, 4);
       expect(r.newBytes, 2);
+      expect(r.newPointer, r.oldPointer, reason: '变短原地写，指针不变');
       expect(w.currentText(id), '是');
     });
 
@@ -146,6 +149,8 @@ void main() {
       expect(r.mode, TextWriteMode.relocated);
       expect(r.newOffset, greaterThan(0));
       expect(r.newOffset, lessThan(0x02000000));
+      expect(r.oldPointer, ptrBefore);
+      expect(r.newPointer, 0x08000000 + r.newOffset, reason: '新指针 = 空位 GBA 地址');
       // 指针槽被改到新位置
       final ptrAfter = edit.buffer.u32(slot);
       expect(ptrAfter, isNot(ptrBefore));
@@ -250,6 +255,21 @@ void main() {
       final r = w.write(1, String.fromCharCode(0xE000));
       expect(r.mode, TextWriteMode.charNotEncodable);
       expect(edit.hasChanges, isFalse);
+    });
+
+    test('Huffman FE7J：码表外双字节特殊码（80 20）不丢字节', () {
+      final edit = _open('0979');
+      final w = TextWriter(edit);
+      final id = 2101; // 烈火第 0 章琳的开场白，含 80 20 等特殊双字节码
+      final origBytes = List<int>.from(w.entryBytes(id)!);
+      final cur = w.currentText(id)!;
+      expect(cur.contains('〔8020〕'), isTrue,
+          reason: '特殊码对应显示为 4 位十六进制占位符');
+      final r = w.write(id, cur); // 原样回写
+      expect(r.ok, isTrue, reason: r.message);
+      // 回写后的字节与原字节逐字一致（重定位后读新位置）
+      expect(w.entryBytes(id), origBytes, reason: '占位符必须原样注入，不丢字节');
+      edit.revertAll();
     });
   });
 

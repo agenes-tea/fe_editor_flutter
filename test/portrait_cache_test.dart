@@ -33,35 +33,39 @@ void main() {
   group('肖像缓存不跨 ROM 串图', () {
     test('同一个肖像索引在两个 ROM 下 key 不同', () {
       final cache = PortraitImageCache.instance;
-      cache.bindRom(_open(fe7jp).fingerprint);
-      final k7 = cache.keyFor(2, 1);
+      final tag7 = _open(fe7jp).fingerprint;
+      final tag6 = _open(fe6cn).fingerprint;
 
-      cache.bindRom(_open(fe6cn).fingerprint);
-      final k6 = cache.keyFor(2, 1);
-
-      expect(k7, isNot(k6),
+      expect(cache.keyFor(tag7, 2, 1), isNot(cache.keyFor(tag6, 2, 1)),
           reason: '烈火之剑与封印之剑的肖像 2 不能共用缓存槽');
     });
 
     test('同一 ROM 内不同用途 / 不同索引依旧互不冲突', () {
       final cache = PortraitImageCache.instance;
-      cache.bindRom(_open(fe7jp).fingerprint);
+      final tag = _open(fe7jp).fingerprint;
       final keys = <int>{
-        cache.keyFor(2, 1),
-        cache.keyFor(2, 2),
-        cache.keyFor(2, 3),
-        cache.keyFor(3, 1),
-        cache.keyFor(0, 1),
+        cache.keyFor(tag, 2, 1),
+        cache.keyFor(tag, 2, 2),
+        cache.keyFor(tag, 2, 3),
+        cache.keyFor(tag, 3, 1),
+        cache.keyFor(tag, 0, 1),
       };
       expect(keys.length, 5);
     });
 
-    test('换 ROM 后旧 key 不再对应新 ROM 的图', () {
+    test('两个 ROM 同时打开时 key 各自固定，不需要切换命名空间', () {
       final cache = PortraitImageCache.instance;
-      cache.bindRom(_open(fe7jp).fingerprint);
-      final before = cache.keyFor(2, 1);
-      cache.bindRom(_open(fe6cn).fingerprint);
-      expect(cache.keyFor(2, 1), isNot(before));
+      final tag7 = _open(fe7jp).fingerprint;
+      final tag6 = _open(fe6cn).fingerprint;
+
+      // 交替取两边：结果只取决于传入的 ROM，与「最近一次打开谁」无关
+      final k7a = cache.keyFor(tag7, 2, 1);
+      final k6a = cache.keyFor(tag6, 2, 1);
+      final k7b = cache.keyFor(tag7, 2, 1);
+      final k6b = cache.keyFor(tag6, 2, 1);
+      expect(k7a, k7b);
+      expect(k6a, k6b);
+      expect(k7a, isNot(k6a));
     });
   });
 }

@@ -20,6 +20,8 @@ class AboutPage extends StatelessWidget {
         children: [
           _appInfoCard(context, scheme),
           const SizedBox(height: 12),
+          _repoCard(context),
+          const SizedBox(height: 8),
           _feedbackCard(context),
           const SizedBox(height: 16),
           _sectionHeader(context, '关于本工具'),
@@ -99,6 +101,25 @@ class AboutPage extends StatelessWidget {
     );
   }
 
+  /// 开源仓库入口：点击跳转 GitHub，可在手机上查看源码与提 issue。
+  Widget _repoCard(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      child: InkWell(
+        onTap: () => _openLink(context, repoUrl),
+        child: ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          leading: Icon(Icons.code, color: scheme.primary),
+          title: const Text('开源仓库',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text('$repoName · GPL-3.0，点击查看源码'),
+          trailing: const Icon(Icons.open_in_new, size: 20),
+        ),
+      ),
+    );
+  }
+
   /// 反馈入口：点击跳转加入腾讯频道【纹章修改器】。
   Widget _feedbackCard(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -120,12 +141,15 @@ class AboutPage extends StatelessWidget {
     );
   }
 
-  Future<void> _openFeedback(BuildContext context) async {
-    final ok = await openUrl(feedbackUrl);
+  Future<void> _openFeedback(BuildContext context) =>
+      _openLink(context, feedbackUrl);
+
+  Future<void> _openLink(BuildContext context, String url) async {
+    final ok = await openUrl(url);
     if (!context.mounted) return;
     if (!ok) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('无法打开链接，请手动访问：$feedbackUrl')),
+        SnackBar(content: Text('无法打开链接，请手动访问：$url')),
       );
     }
   }
@@ -191,6 +215,9 @@ class AboutPage extends StatelessWidget {
   Widget _disclaimerCard(BuildContext context) {
     const items = [
       '本工具不内置、不提供任何受版权保护的游戏 ROM 和素材资源。',
+      '本工具申请网络权限**仅**用于 MCP 调试功能的本机回环 / 局域网连接，'
+          '不向任何外部服务器发送你的 ROM、游戏数据或个人信息。'
+          'MCP 默认关闭，且默认只允许本机访问。',
       '请仅使用你合法持有、由自有实体卡带导出的 ROM 文件进行修改。',
       'ROM 修改写入操作存在不可逆风险。修改前请务必备份原始文件；'
           '因未备份造成的数据丢失，开发者不承担责任。',

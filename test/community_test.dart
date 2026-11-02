@@ -18,9 +18,11 @@ const fe8jp =
 void main() {
   test('预设全部可见（功能已恢复）', () {
     expect(cheatPresets.every((p) => p.visible), isTrue);
-    // 4 个角色数值类 + 2 个职业类（三倍经验、能力上限 50）
+    // 5 个角色类（含「单角色全套强化」组合预设）+ 2 个职业类（三倍经验、能力上限 50）
     // + 2 个道具类 + 2 个支援类 + 2 个规则类（支援距离）
-    expect(cheatPresets.length, 12);
+    expect(cheatPresets.length, 13);
+    expect(cheatPresets.where((p) => p.combo != null).length, 1,
+        reason: '组合预设只有一个：unit_full_suite');
     expect(
         cheatPresets.where((p) => p.target == CheatTarget.classTable).length, 2);
     expect(

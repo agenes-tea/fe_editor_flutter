@@ -188,6 +188,9 @@ class MapReader {
     return 0;
   }
 
+  /// 地形名表基地址（已解引用），诊断用。
+  int get terrainNameSlotBase => _slotPointer(_terrainNameSlot);
+
   int _slotPointer(int slot) {
     if (slot <= 0) return -1;
     return rom.pointerAt(slot);
@@ -239,6 +242,9 @@ class MapReader {
     );
   }
 
+  /// 地图 plist 表的基地址（已解引用）；不可用时为 -1。
+  int get mapPlistBase => _slotPointer(_mapPlistSlot);
+
   /// plist 表里第 [index] 项指向的数据偏移。
   int _plistEntry(int slot, int index) {
     final base = _slotPointer(slot);
@@ -246,6 +252,29 @@ class MapReader {
     final at = base + 4 * index;
     if (at + 4 > rom.length) return -1;
     return rom.pointerAt(at);
+  }
+
+  /// 章节内部资源名（`bmap00` / `T01)00` / `L00`）。
+  ///
+  /// 这是**地图资源标识**，不是玩家看到的章名（那在文本表里）。
+  /// 用途：让 AI / 脚本能确认「索引 N 对应哪个资源」，比纯数字好核对。
+  String resourceNameOf(int chapter) {
+    if (!available || chapter < 0 || chapter >= chapterCount) return '';
+    final at = settingBase + _settingSize * chapter;
+    final off = rom.pointerAt(at);
+    if (off < 0) return '';
+    final out = <int>[];
+    for (var i = 0; i < 16 && off + i < rom.length; i++) {
+      final b = rom.data[off + i];
+      if (b == 0) break;
+      out.add(b);
+    }
+    if (out.isEmpty) return '';
+    // 这些名字都是 ASCII，非可打印就当没解出来
+    for (final b in out) {
+      if (b < 0x20 || b > 0x7E) return '';
+    }
+    return String.fromCharCodes(out);
   }
 
   /// 读该章的砖块数据（不渲染）。
@@ -349,6 +378,50 @@ class MapReader {
       list.add(palette);
     }
     return list;
+  }
+
+  // ---------- chipset 图形 blob（砖块长什么样的 4bpp 图） ----------
+
+  /// 该章 chipset 的全部 blob（主 + 可选副，按纵向拼接顺序）。
+  ///
+  /// 只收「整块 tile 行」的 blob（解压长度 1024 字节整倍数），
+  /// 定位不到时返回空列表（编辑器据此禁用）。
+  List<ChipsetBlob> chipsetBlobs(int chapter) {
+    final p = plistsOf(chapter);
+    if (p == null) return const [];
+    final out = <ChipsetBlob>[];
+    void add(int idx) {
+      final off = _plistEntry(_objPlistSlot, idx);
+      if (off < 0) return;
+      final uz = Lz77.decompress(rom.data, off);
+      if (uz == null || uz.isEmpty || uz.length % 1024 != 0) return;
+      out.add(ChipsetBlob(idx, off, uz.length ~/ 1024));
+    }
+
+    add(p.obj & 0xFF);
+    final second = (p.obj >> 8) & 0xFF;
+    if (second != 0) add(second);
+    return out;
+  }
+
+  /// 与 [chapter] 共用同一份 [which]（`'map'` 地图数据 / `'obj'` chipset）
+  /// 的其它章节（不含自己）。
+  ///
+  /// 地图与 chipset 的 plist 索引跨章节共享（FE8J 有 28 章共用一张地图），
+  /// 改尺寸/改图形会连带影响这些章节，写回前用它给用户点名。
+  List<int> sharedChapters(int chapter, String which) {
+    final p = plistsOf(chapter);
+    if (p == null) return const [];
+    final mine = which == 'obj' ? p.obj : p.map;
+    if (which == 'map' && mine == 0) return const [];
+    final out = <int>[];
+    for (var c = 0; c < chapterCount; c++) {
+      if (c == chapter) continue;
+      final q = plistsOf(c);
+      if (q == null) continue;
+      if ((which == 'obj' ? q.obj : q.map) == mine) out.add(c);
+    }
+    return out;
   }
 
   // ---------- 地形名 ----------
@@ -569,6 +642,51 @@ Uint8List decode4bppIndices(Uint8List data, int width, int height) {
     }
   }
   return out;
+}
+
+/// [decode4bppIndices] 的逆：调色板索引数组（宽固定 256px）→ 4bpp 字节流。
+///
+/// 字节布局与 GBA 一致：每 8×8 tile 占 32 字节（8 行 × 4 字节，
+/// 低半字节是偶数像素、高半字节是奇数像素），tile 按行主序排列。
+/// 编码顺序与解压器严格互逆（`lz77_compress_test` / chipset 写回测试锁定）：
+/// 对完整 1024 字节整倍数的原流，encode(decode(x)) 与 x 逐字节一致。
+Uint8List encode4bppIndices(List<int> indices, int tileRows) {
+  final out = Uint8List(tileRows * 32 * 32);
+  for (var ty = 0; ty < tileRows; ty++) {
+    for (var tx = 0; tx < 32; tx++) {
+      var o = (ty * 32 + tx) * 32;
+      for (var py = 0; py < 8; py++) {
+        final rowBase = (ty * 8 + py) * 256 + tx * 8;
+        for (var px = 0; px < 8; px += 2) {
+          final lo = indices[rowBase + px] & 0x0F;
+          final hi = indices[rowBase + px + 1] & 0x0F;
+          out[o + py * 4 + px ~/ 2] = lo | (hi << 4);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/// 一个 chipset 图形 blob（独立 LZ77 流）。
+///
+/// 章节的 `obj` u16 可引两个 chipset（低字节主、高字节副，纵向拼接，
+/// 见 `MapReader.chipIndices`）；每个 blob 是独立的压缩块，写回时各自独立重压。
+class ChipsetBlob {
+  /// 所属 obj plist 表索引（同一索引可能被多个章节共享）。
+  final int plistIndex;
+
+  /// LZ77 流起点的文件偏移。
+  final int offset;
+
+  /// 8×8 tile 的行数（像素高 = tileRows × 8，像素宽固定 256）。
+  final int tileRows;
+
+  int get pixelHeight => tileRows * 8;
+
+  int get pixelCount => 256 * pixelHeight;
+
+  const ChipsetBlob(this.plistIndex, this.offset, this.tileRows);
 }
 
 /// 一个章节引用的一组 plist 索引。

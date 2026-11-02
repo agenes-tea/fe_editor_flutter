@@ -60,3 +60,8 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // FileProvider：「用模拟器打开」把缓存里的 .gba 包成 content URI 分享
+    implementation 'androidx.core:core:1.13.1'
+}

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/services.dart';
 
 const _channel = MethodChannel('fe_editor/files');
@@ -6,6 +8,52 @@ const _channel = MethodChannel('fe_editor/files');
 Future<String?> pickRomFile() async {
   final path = await _channel.invokeMethod<String>('pickRom');
   return (path == null || path.isEmpty) ? null : path;
+}
+
+/// 用系统文件选择器选一个配方 JSON 文件，直接返回文本内容（不经过缓存文件；
+/// 取消或测试环境无原生通道时返回 null）。
+Future<String?> pickRecipeFile() async {
+  try {
+    final text = await _channel.invokeMethod<String>('pickJson');
+    return (text == null || text.isEmpty) ? null : text;
+  } on MissingPluginException {
+    return null;
+  }
+}
+
+/// 选一个文本文件（对话补丁等），读回 UTF-8 内容；取消或无原生通道时返回 null。
+Future<String?> pickTextFile() async {
+  try {
+    final text = await _channel.invokeMethod<String>('pickText');
+    return (text == null || text.isEmpty) ? null : text;
+  } on MissingPluginException {
+    return null;
+  }
+}
+
+/// 选一个补丁文件（.ips/.ups），读进缓存后返回真实路径；取消时返回 null。
+Future<String?> pickPatchFile() async {
+  final path = await _channel.invokeMethod<String>('pickPatch');
+  return (path == null || path.isEmpty) ? null : path;
+}
+
+/// 把改后的 ROM 分享到系统，让用户挑模拟器（mGBA 等）直接打开。
+///
+/// 成功返回 null；失败/无原生通道时返回原因文本（给界面提示用）。
+Future<String?> shareGbaRom(String name, Uint8List bytes) async {
+  try {
+    await _channel.invokeMethod('shareGbaRom', {
+      'name': name,
+      'bytes': bytes,
+    });
+    return null;
+  } on PlatformException catch (e) {
+    return e.code == 'NO_TARGET'
+        ? '没找到能接收 ROM 的应用（请先安装 mGBA 等模拟器）'
+        : (e.message ?? '分享失败');
+  } on MissingPluginException {
+    return '当前环境没有原生通道，无法分享';
+  }
 }
 
 /// 用系统「另存为」保存文件，返回目标 Uri 字符串；取消时返回 null。

@@ -10,25 +10,19 @@ import 'tile_image.dart';
 /// 与 [MapSpriteReader] 的分工：那边负责「解出 TileImage」，这里负责
 /// 「转成 ui.Image 并缓存」。key 必须带 ROM 指纹，否则换 ROM 后同索引
 /// 会命中上一个 ROM 的图（肖像缓存踩过同样的坑）。
+///
+/// 指纹由调用方传入，缓存不持有「当前 ROM」这种全局状态——
+/// 同时打开多个 ROM 时各自的图并存，互不覆盖。
 class MapSpriteImageCache {
   MapSpriteImageCache._();
 
   static final MapSpriteImageCache instance = MapSpriteImageCache._();
 
+  static const int _limit = 96;
   final _images = <int, ui.Image>{};
-  int _romTag = 0;
 
-  void bindRom(int romTag) {
-    if (_romTag == romTag) return;
-    _romTag = romTag;
-    for (final img in _images.values) {
-      img.dispose();
-    }
-    _images.clear();
-  }
-
-  int keyFor(int spriteId, int paletteGroup) =>
-      (_romTag & 0xFFFF) * 0x10000 + (spriteId & 0xFF) * 4 + (paletteGroup & 3);
+  int keyFor(int romTag, int spriteId, int paletteGroup) =>
+      (romTag & 0xFFFF) * 0x10000 + (spriteId & 0xFF) * 4 + (paletteGroup & 3);
 
   /// 已缓存好的图（同步返回，供 FutureBuilder 首帧直接命中）。
   ui.Image? peek(int key) => _images[key];
@@ -44,7 +38,7 @@ class MapSpriteImageCache {
       tile.height,
       ui.PixelFormat.rgba8888,
       (img) {
-        if (_images.length >= 96) {
+        if (_images.length >= _limit) {
           final first = _images.keys.first;
           _images.remove(first)?.dispose();
         }
@@ -64,6 +58,9 @@ class UnitSpriteProvider {
   final FeRom rom;
   late final MapSpriteReader _reader = MapSpriteReader(rom);
 
+  /// 缓存命名空间：取 ROM 内容指纹。
+  late final int _romTag = rom.fingerprint;
+
   UnitSpriteProvider(this.rom);
 
   MapSpriteImageCache get _cache => MapSpriteImageCache.instance;
@@ -80,7 +77,7 @@ class UnitSpriteProvider {
     if (tile == null) return null;
     final sms = _reader.classSmsId(classId);
     return _cache.image(
-        tile, _cache.keyFor(sms < 0 ? entry.id : sms, paletteGroup));
+        tile, _cache.keyFor(_romTag, sms < 0 ? entry.id : sms, paletteGroup));
   }
 
   /// 已经解码好的小人图（同步返回）。用于 build 里直接命中缓存，
@@ -89,7 +86,8 @@ class UnitSpriteProvider {
     final sms = _reader.classSmsId(classId);
     final entry = _reader.entryForClass(classId);
     if (entry == null) return null;
-    return _cache.peek(_cache.keyFor(sms < 0 ? entry.id : sms, paletteGroup));
+    return _cache
+        .peek(_cache.keyFor(_romTag, sms < 0 ? entry.id : sms, paletteGroup));
   }
 
   /// 小人的单帧像素尺寸（16 / 16×32 / 32×32），取不到时按 16×16。

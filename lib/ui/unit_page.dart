@@ -339,7 +339,8 @@ class _ClassListPageState extends State<ClassListPage> {
                         ? PortraitView(
                             tile: img,
                             cacheKey: PortraitImageCache.instance
-                                .keyFor(0x4000 + (sprite!.id & 0xFFF), 9),
+                                .keyFor(widget.edit.rom.fingerprint,
+                                    0x4000 + (sprite!.id & 0xFFF), 9),
                             width: 40,
                             height: 40,
                           )
@@ -347,7 +348,7 @@ class _ClassListPageState extends State<ClassListPage> {
                             ? PortraitView(
                                 tile: mapFace,
                                 cacheKey:
-                                    PortraitImageCache.instance.keyFor(pid, 7),
+                                    PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, pid, 7),
                                 width: 40,
                                 height: 40,
                               )
@@ -482,6 +483,20 @@ class _ClassEditPageState extends State<ClassEditPage> {
         padding: const EdgeInsets.all(16),
         children: [
           _classImageHeader(mapFace, classCard, pid, sprite, spriteEntry),
+          if (rom.classDescription(widget.index).trim().isNotEmpty) ...[
+            sectionTitle(context, '介绍'),
+            Card(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  rom.classDescription(widget.index).trim(),
+                  style: const TextStyle(fontSize: 13, height: 1.6),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           for (final (title, fields) in groups)
             if (fields.isNotEmpty) ...[
               sectionTitle(context, title),
@@ -586,7 +601,8 @@ class _ClassEditPageState extends State<ClassEditPage> {
                 PortraitView(
                   tile: sprite,
                   cacheKey: PortraitImageCache.instance
-                      .keyFor(0x4000 + (spriteEntry!.id & 0xFFF), 9),
+                      .keyFor(widget.edit.rom.fingerprint,
+                          0x4000 + (spriteEntry!.id & 0xFFF), 9),
                   width: 80,
                   height: (sprite.height * 80 / sprite.width).toDouble(),
                 ),
@@ -599,7 +615,7 @@ class _ClassEditPageState extends State<ClassEditPage> {
               children: [
                 PortraitView(
                   tile: mapFace,
-                  cacheKey: PortraitImageCache.instance.keyFor(pid, 7),
+                  cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, pid, 7),
                   width: 80,
                   height: 80,
                 ),
@@ -611,7 +627,7 @@ class _ClassEditPageState extends State<ClassEditPage> {
               children: [
                 PortraitView(
                   tile: card,
-                  cacheKey: PortraitImageCache.instance.keyFor(pid, 8),
+                  cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, pid, 8),
                   width: 100,
                   height: 100,
                 ),
@@ -709,7 +725,7 @@ class _UnitListPageState extends State<UnitListPage> {
                     )
                   : PortraitView(
                       tile: img,
-                      cacheKey: PortraitImageCache.instance.keyFor(faceId!, 1),
+                      cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, faceId!, 1),
                       width: 40,
                       height: 40,
                     ),
@@ -825,7 +841,7 @@ class _UnitEditPageState extends State<UnitEditPage> {
         children: [
           _UnitHeader(
             face: faceImg,
-            cacheKey: PortraitImageCache.instance.keyFor(portraitId ?? -1, 2),
+            cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, portraitId ?? -1, 2),
             faceId: portraitId,
             className: cname,
             classId: cid,
@@ -853,6 +869,20 @@ class _UnitEditPageState extends State<UnitEditPage> {
                     );
                   },
           ),
+          if (rom.unitDescription(widget.index).trim().isNotEmpty) ...[
+            sectionTitle(context, '介绍'),
+            Card(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  rom.unitDescription(widget.index).trim(),
+                  style: const TextStyle(fontSize: 13, height: 1.6),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           sectionTitle(context, '基础数值 / 成长率'),
           FieldGroupCard(
             fields: stats,

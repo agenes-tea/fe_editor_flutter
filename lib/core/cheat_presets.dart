@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'editable_rom.dart';
 import 'fe_rom.dart';
 import 'item_catalog.dart';
@@ -73,6 +75,12 @@ class CheatPreset {
   /// 是否在修改器界面显示（社区版暂时隐藏的部分选项设为 false）。
   final bool visible;
 
+  /// 组合预设：非空时不写自己的 [values]，而是按序逐个应用这些
+  /// 子预设（id 见 [cheatPresets]），作用范围（口径 + 自定义名单）
+  /// 参数原样传给每个子项。「单角色全套强化」就是这么做的：
+  /// 角色字段走名单口径，职业字段作用于全表。
+  final List<String>? combo;
+
   const CheatPreset({
     required this.id,
     required this.title,
@@ -81,6 +89,7 @@ class CheatPreset {
     required this.values,
     this.scopeSelectable = true,
     this.visible = true,
+    this.combo,
   });
 }
 
@@ -245,6 +254,24 @@ const cheatPresets = <CheatPreset>[
     values: {},
     scopeSelectable: true,
   ),
+  CheatPreset(
+    id: 'unit_full_suite',
+    title: '单角色全套强化',
+    description: '对选中名单一次做全套：成长率拉满 + 武器熟练度 S，'
+        '并把全职业的能力上限提到 50（HP 60）、经验分母改为 1（三倍经验）。'
+        '职业表的两项影响整类职业（游戏内上限与经验都按职业结算），'
+        '「只给一个人」的效果 = 名单口径 + 职业表全改。'
+        '搭配「自定义名单」勾一个角色最顺手',
+    target: CheatTarget.unit,
+    values: {},
+    scopeSelectable: true,
+    combo: [
+      'unit_max_growth',
+      'unit_max_weapon_rank',
+      'class_caps_50',
+      'class_exp_denominator_1',
+    ],
+  ),
 ];
 
 /// S 档位的累计值。FE6 与 FE7/FE8 这套阈值不同（见 [WeaponRank]）。
@@ -266,6 +293,7 @@ Map<String, int> resolveValues(CheatPreset preset, {required bool fe6}) {
 /// 该预设会影响的条目数（用于 UI 预览，不实际写入）。
 ///
 /// [criterion] 仅对 `CheatTarget.unit` 生效；职业表与道具表没有阵营概念。
+/// 组合预设取各子项预览数的最大值（名单口径那一类）。
 int cheatEntryCount(
   CheatPreset preset,
   FeRom rom, {
@@ -273,6 +301,19 @@ int cheatEntryCount(
   PlayableUnits? playable,
   CustomRoster? custom,
 }) {
+  final combo = preset.combo;
+  if (combo != null && combo.isNotEmpty) {
+    var max = 0;
+    for (final id in combo) {
+      final sub = cheatPresets.where((p) => p.id == id).firstOrNull;
+      if (sub == null) continue;
+      max = math.max(
+          max,
+          cheatEntryCount(sub, rom,
+              criterion: criterion, playable: playable, custom: custom));
+    }
+    return max;
+  }
   final pu = playable ?? playableUnitsOf(rom);
   final scope = RosterScope(
     criterion: criterion,
@@ -338,6 +379,30 @@ CheatResult applyCheat(
   PlayableUnits? playable,
   CustomRoster? custom,
 }) {
+  // 组合预设：按序应用子项（范围参数原样透传），unknown 的 id 记进 skipped
+  final combo = preset.combo;
+  if (combo != null && combo.isNotEmpty) {
+    final bytesBefore = edit.changedByteCount;
+    var changedEntries = 0;
+    final skipped = <String>[];
+    for (final id in combo) {
+      final sub = cheatPresets.where((p) => p.id == id).firstOrNull;
+      if (sub == null) {
+        skipped.add('组合项「$id」不存在');
+        continue;
+      }
+      final r = applyCheat(edit, sub,
+          criterion: criterion, playable: playable, custom: custom);
+      changedEntries += r.changedEntries;
+      skipped.addAll(r.skipped);
+    }
+    return CheatResult(
+      changedEntries: changedEntries,
+      changedBytes: edit.changedByteCount - bytesBefore,
+      skipped: skipped,
+    );
+  }
+
   final rom = edit.rom;
   final fe6 = rom.isFe6;
   final pu = playable ?? playableUnitsOf(rom);
