@@ -1,6 +1,6 @@
 /// 测试用的真实 ROM 目录。
 ///
-/// 测试直接读 `game-rom/` 里的 13 个真实 ROM —— 这是本项目最核心的验证手段。
+/// 测试直接读 `game-rom/` 里的真实 ROM —— 这是本项目最核心的验证手段。
 /// ROM 有版权，不进仓库，所以路径由使用者在跑测试时指定：
 ///
 /// ```bash
@@ -13,6 +13,3 @@
 /// 不必改成 final，改动面最小。
 const _envRomDir = String.fromEnvironment('FE_ROM_DIR');
 const romDir = _envRomDir != '' ? _envRomDir : '../game-rom';
-
-/// 工程根下的资源目录（`flutter test` 的工作目录就是工程根，所以用相对路径）。
-const assetsDir = 'assets';
