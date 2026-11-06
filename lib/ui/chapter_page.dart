@@ -9,6 +9,7 @@ import '../core/chapter_dialogs.dart';
 import 'chapter_preview_page.dart';
 import 'dialog_script_page.dart';
 import 'event_editor_page.dart';
+import 'event_unit_edit_page.dart';
 import '../core/chapter_events.dart';
 import '../core/fe_rom.dart';
 import '../core/chapter_traps.dart';
@@ -1356,17 +1357,38 @@ class _ChapterPageState extends State<ChapterPage> {
         '${outside ? ' · 图外' : ''}',
         style: const TextStyle(fontSize: 11),
       ),
-      trailing: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: scheme.outlineVariant),
-        ),
-        child: Text(
-          '事件',
-          style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant),
-        ),
+      // 道具从**实时** buffer 重读：改完返回本页要立刻看到新值
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: scheme.outlineVariant),
+            ),
+            child: Text(
+              '事件',
+              style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant),
+            ),
+          ),
+          const SizedBox(width: 4),
+          const Icon(Icons.edit_note, size: 16),
+        ],
       ),
+      onTap: () async {
+        final changed = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => EventUnitEditPage(edit: widget.edit, unit: u),
+          ),
+        );
+        if (changed == true && mounted) {
+          // 事件列表是按地址缓存的单位快照，改完要让下次读取重新解析
+          _eventsChapter = -1;
+          setState(() {});
+        }
+      },
     );
   }
 }

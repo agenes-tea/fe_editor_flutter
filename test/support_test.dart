@@ -5,7 +5,9 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/rom_info.dart';
 import 'package:fe_editor/core/support.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe6jp = '$dir/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba';
 const fe7jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe7us = '$dir/1235 - 火炎之纹章-烈火之剑 Fire Emblem(US)(Nintendo)(128Mb).gba';

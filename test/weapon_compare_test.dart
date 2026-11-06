@@ -4,9 +4,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/battle_sim.dart';
 import 'package:fe_editor/core/rom_session.dart';
 
+import 'rom_paths.dart';
+
 /// 全武器对比（BattleSimulator.compareWeapons）：
 /// 排序、与 forecast 一致性、limit。
-const dir = '/root/workspace/game-rom';
+const dir = romDir;
 const fe7jp =
     '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe8jp =

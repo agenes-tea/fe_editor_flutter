@@ -4,7 +4,9 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/portrait.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe6jp =
     '$dir/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba';
 const fe7jp =

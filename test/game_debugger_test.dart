@@ -7,6 +7,8 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/game_debugger.dart';
 import 'package:fe_editor/core/rom_info.dart';
 
+import 'rom_paths.dart';
+
 /// 从 assets 读补丁（测试里直接读文件，免得依赖 rootBundle 初始化）。
 GameDebuggerPatch _loadPatch(String id) {
   final f = File('assets/debugger/$id.json');
@@ -14,7 +16,7 @@ GameDebuggerPatch _loadPatch(String id) {
 }
 
 Uint8List _fe8Jp() {
-  final dir = Directory('/root/workspace/game-rom');
+  final dir = Directory(romDir);
   final f = dir
       .listSync()
       .whereType<File>()

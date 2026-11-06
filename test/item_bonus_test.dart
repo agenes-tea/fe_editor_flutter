@@ -7,12 +7,14 @@ import 'package:fe_editor/core/item_catalog.dart';
 import 'package:fe_editor/core/rom_session.dart';
 import 'package:fe_editor/ui/item_page.dart';
 
+import 'rom_paths.dart';
+
 /// 道具介绍 / 数值加成（9×s8）/ 专用锁定位（IA_LOCK ↔ CA_LOCK）测试。
 ///
 /// 数据依据：反编译 fireemblem6j `item.h`/`item.c`（ItemStatBonuses、
 /// CanUnitUseWeapon）与 FE8U `bmitem.h`（IA_LOCK_0..7），锚点全部来自
 /// 真实 ROM 实测（封印之剑 = Excalibur = def+5 res+5，仅 Phegas 系可用）。
-const dir = '/root/workspace/game-rom';
+const dir = romDir;
 const fe6jp =
     '$dir/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba';
 const fe7jp =

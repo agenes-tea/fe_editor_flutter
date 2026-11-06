@@ -7,7 +7,9 @@ import 'package:fe_editor/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe7jp =
     '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 

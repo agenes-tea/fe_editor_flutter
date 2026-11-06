@@ -8,7 +8,9 @@ import 'package:fe_editor/core/portrait.dart';
 import 'package:fe_editor/ui/portrait_page.dart';
 import 'package:fe_editor/ui/unit_page.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe6cn = '$dir/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
 const fe7jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 

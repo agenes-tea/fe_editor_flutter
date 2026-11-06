@@ -8,7 +8,9 @@ import 'package:fe_editor/core/text_browser.dart';
 import 'package:fe_editor/ui/portrait_page.dart';
 import 'package:fe_editor/ui/unit_page.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 
 /// 三个重度改版 ROM（2022-10 用户提供），按文件大小定位避免中文文件名进源码：
 /// 佣兵公司完全汉化版（FE7U 底，25MB）、黑暗护符（FE8U 底，22.6MB）、HoloEmblem（FE8U 底，33.2MB）。

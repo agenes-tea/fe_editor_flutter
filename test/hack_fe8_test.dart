@@ -7,14 +7,16 @@ import 'package:fe_editor/core/item_catalog.dart';
 import 'package:fe_editor/core/support.dart';
 import 'package:fe_editor/core/text_codec.dart';
 
+import 'rom_paths.dart';
+
 /// 狼组 & 火花天龙剑 以 FE8 为蓝本做的改版（约 2004 年）。
 ///
 /// 实测：BE8J、所有 FE8J 指针槽有效，unit/class/item 表与 FE8J 逐字节同址同值，
 /// 支援数据同样 33/255 条。**但文本引擎被改写**（Huffman 树重建、字符码重编号），
 /// 因此 `textEncoding` 为 unknown，中文名解不出来——与 FE8 汉化版同一类问题。
-const hack = '/root/workspace/game-rom/1692X 火焰之纹章-圣邪的意志.gba';
+const hack = romDir + '/1692X 火焰之纹章-圣邪的意志.gba';
 const fe8jp =
-    '/root/workspace/game-rom/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
+    romDir + '/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
 
 void main() {
   group('圣邪的意志（FE8 改版）', () {

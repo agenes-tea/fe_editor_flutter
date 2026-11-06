@@ -1,7 +1,11 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'app_meta.dart';
 import 'app_settings.dart';
+import 'asset_converters.dart';
+import 'asset_library.dart';
+import 'asset_store.dart';
 import 'battle_anim.dart';
 import 'battle_anim_porter.dart';
 import 'battle_sim.dart';
@@ -9,6 +13,7 @@ import 'battle_anim.dart' show encodePng;
 import 'chapter_event_editor.dart';
 import 'chapter_events.dart';
 import 'chapter_dialogs.dart';
+import 'class_terrain.dart';
 import 'cheat_presets.dart';
 import 'chest_shop.dart';
 import 'custom_roster.dart';
@@ -26,6 +31,7 @@ import 'map_writer.dart';
 import 'mcp_service.dart';
 import 'playable_units.dart';
 import 'portrait.dart';
+import 'portrait_import.dart';
 import 'portrait_porter.dart';
 import 'recipe.dart';
 import 'rom_health.dart';
@@ -59,6 +65,9 @@ class McpServer {
   ///
   /// 服务器跑在后台线程，需要一个稳定的入口拿到「当前打开的是哪些 ROM」。
   RomWorkspace? _workspace;
+
+  /// 素材仓库工厂。默认走原生通道；测试里可以换成内存实现。
+  AssetStore Function(String project)? assetStoreFactory;
 
   void attach(RomWorkspace workspace) => _workspace = workspace;
 
@@ -227,6 +236,9 @@ class McpServer {
   /// 单响应几万字符，连续调用直接卡住）。宁可在响应里少给细节、留一行说明，
   /// 也不要让调用方干等。
   static const int responseCharBudget = 12000;
+
+  /// `describe_rom` 里章节清单的条数上限（其余用 list_chapters 取）。
+  static const int _describeChapterLimit = 40;
 
   /// `tools/call` 的返回：统一包装成 MCP 的 content 结构。
   ///
@@ -447,6 +459,26 @@ class McpServer {
         return _listWorkspaceRoms(a);
       case 'open_workspace_rom':
         return _openWorkspaceRom(a);
+      case 'list_asset_library':
+        return _listAssetLibrary(a);
+      case 'read_asset':
+        return _readAsset(a);
+      case 'write_asset':
+        return _writeAsset(a);
+      case 'list_assets':
+        return _listAssets(a);
+      case 'asset_info':
+        return _assetInfo(a);
+      case 'import_asset_from_library':
+        return _importAssetFromLibrary(a);
+      case 'import_asset':
+        return _importAsset(a);
+      case 'export_asset_from_rom':
+        return _exportAssetFromRom(a);
+      case 'copy_asset_between_sessions':
+        return _copyAssetBetweenSessions(a);
+      case 'delete_asset':
+        return _deleteAsset(a);
       case 'list_cheat_presets':
         return _listCheatPresets(a);
       case 'apply_cheat_preset':
@@ -489,6 +521,8 @@ class McpServer {
         return _setChapterUnit(a);
       case 'attach_portrait_to_unit':
         return _attachPortrait(a);
+      case 'import_portrait_image':
+        return _importPortraitImage(a);
       case 'clone_unit':
         return _cloneUnit(a);
       case 'add_reinforcement':
@@ -509,6 +543,10 @@ class McpServer {
         return _exportRecipe(a);
       case 'apply_recipe':
         return _applyRecipe(a);
+      case 'get_class_terrain':
+        return _getClassTerrain(a);
+      case 'set_class_terrain':
+        return _setClassTerrain(a);
       default:
         throw _ToolFailure('未知工具：$name');
     }
@@ -704,6 +742,120 @@ class McpServer {
     return out;
   }
 
+  /// 职业地形表：表名 → (指针槽偏移, 中文标签)。
+  ({int slot, String label})? _terrainSlot(ClassTerrain t, String name) {
+    switch (name) {
+      case 'mov_dry':
+        return (slot: t.movCostOffsets[0], label: '移动消耗（晴）');
+      case 'mov_rain':
+        if (t.movCostOffsets.length < 2) return null;
+        return (slot: t.movCostOffsets[1], label: '移动消耗（雨）');
+      case 'mov_snow':
+        if (t.movCostOffsets.length < 3) return null;
+        return (slot: t.movCostOffsets[2], label: '移动消耗（雪）');
+      case 'avoid':
+        return (slot: t.lookupOffsets[0], label: '地形回避');
+      case 'defense':
+        return (slot: t.lookupOffsets[1], label: '地形防御');
+      case 'resistance':
+        return (slot: t.lookupOffsets[2], label: '地形魔防');
+    }
+    return null;
+  }
+
+  Object _getClassTerrain(Map<String, dynamic> a) {
+    final s = awaitSessionSync(a);
+    final rom = s.liveRom;
+    final id = _requireIndex(a, 'id', rom.classCount);
+    final t = ClassTerrain(s.rom);
+    final only = (a['terrain'] as num?)?.toInt();
+
+    List<Object?> values(int slot) {
+      if (only != null) {
+        return [t.valueAt(id, slot, only)];
+      }
+      return [
+        for (var i = 0; i <= ClassTerrain.terrainCount; i++)
+          t.valueAt(id, slot, i)
+      ];
+    }
+
+    Map<String, Object?> table(String label, int slot) => {
+          'label': label,
+          'pointer_slot': slot,
+          'target': t.pointerTarget(id, slot),
+          if (only != null) 'terrain': only,
+          'values': values(slot),
+          'shared_with_n': t.sharersOf(id, slot).length,
+          'shared_with': [
+            for (final c in t.sharersOf(id, slot).take(12))
+              {'id': c, 'name': rom.classDisplayName(c).trim()}
+          ],
+        };
+
+    return {
+      'id': id,
+      'name': rom.classDisplayName(id).trim(),
+      'is_fe6': t.isFe6,
+      'terrain_count': ClassTerrain.terrainCount,
+      'tables': [
+        for (var i = 0; i < t.movCostOffsets.length; i++)
+          table(ClassTerrain.movCostLabels[i], t.movCostOffsets[i]),
+        for (var i = 0; i < t.lookupOffsets.length; i++)
+          table(ClassTerrain.lookupLabels[i], t.lookupOffsets[i]),
+      ],
+      'note': '地形表在 ROM 里常常被多个职业共享（shared_with），'
+          '改一处会影响所有共享者。',
+    };
+  }
+
+  Object _setClassTerrain(Map<String, dynamic> a) {
+    final s = awaitSessionSync(a);
+    final rom = s.liveRom;
+    final id = _requireIndex(a, 'id', rom.classCount);
+    final t = ClassTerrain(s.rom);
+    final tableName = a['table'];
+    if (tableName is! String) {
+      throw _ToolFailure(
+          'table 必填：mov_dry / mov_rain / mov_snow / avoid / defense / resistance');
+    }
+    final slot = _terrainSlot(t, tableName);
+    if (slot == null) {
+      throw _ToolFailure(t.isFe6
+          ? 'FE6 没有雨/雪两张移动表；可用：mov_dry / avoid / defense / resistance'
+          : '未知 table：$tableName');
+    }
+    final terrain = _requireInt(a, 'terrain');
+    if (terrain < 0 || terrain > ClassTerrain.terrainCount) {
+      throw _ToolFailure(
+          'terrain 越界：0..${ClassTerrain.terrainCount}（得到 $terrain）');
+    }
+    final value = _requireInt(a, 'value');
+    if (value < -128 || value > 127) {
+      throw _ToolFailure('value 越界：-128..127（得到 $value）');
+    }
+    final before = t.valueAt(id, slot.slot, terrain);
+    if (before == null) {
+      throw _ToolFailure('职业 $id 的「${slot.label}」表指针无效，不能写');
+    }
+    final dry = _dryRun(a);
+    final at = t.pointerTarget(id, slot.slot) + terrain;
+    final n = dry ? 0 : t.setValue(id, slot.slot, terrain, value);
+    return {
+      'dry_run': dry,
+      'class_id': id,
+      'table': tableName,
+      'label': slot.label,
+      'terrain': terrain,
+      'before': before,
+      'after': value,
+      'offset': at,
+      'changed': dry ? (before != value) : n == 1,
+      if (!dry && n == 1) 'changed_bytes': s.rom.changedByteCount,
+      'shared_with_n': t.sharersOf(id, slot.slot).length,
+    };
+  }
+
   /// 单位 / 职业 / 道具共用的字段写入。
   Object _setField(Map<String, dynamic> a, {required String target}) {
     final s = awaitSessionSync(a);
@@ -876,6 +1028,9 @@ class McpServer {
     final kind = (a['kind'] as String?) ?? 'face';
     final reader = PortraitReader(s.rom.liveRom);
     final tile = switch (kind) {
+      'mouth_frame' => reader.mouthFrame(id, (a['frame'] as num?)?.toInt() ?? 1),
+      'eye_half' => reader.eyeFrame(id, closed: false),
+      'eye_closed' => reader.eyeFrame(id, closed: true),
       'map_face' => reader.mapFaceImage(id),
       'class_card' => reader.classCardImage(id),
       _ => reader.faceImage(id),
@@ -1235,6 +1390,7 @@ class McpServer {
     return {
       'configured': true,
       'dir_name': dir.name,
+      'dir_uri': dir.uri,
       'count': roms.length,
       'roms': [for (final r in roms) r.toJson()],
     };
@@ -1272,6 +1428,380 @@ class McpServer {
       'text_writable': session.textWritable,
       'sessions': w.sessions.length,
     };
+  }
+
+  /// 列出素材库目录里的文件。与外部工作区对称：
+  /// 目录路径(dir_uri)、显示名、文件清单都交给 AI 自己看。
+  Future<Object> _listAssetLibrary(Map<String, dynamic> a) async {
+    final lib = AssetLibrary.instance;
+    final dir = lib.dir;
+    if (dir == null) {
+      return {
+        'configured': false,
+        'assets': const [],
+        'hint': '还没设置素材库。让用户在 App 里选一个素材库目录（存导出肖像/动画帧等），'
+            '之后这里会列出目录里的文件。',
+      };
+    }
+    final files = await lib.list();
+    final limit = (a['limit'] as num?)?.toInt() ?? 100;
+    return {
+      'configured': true,
+      'dir_name': dir.name,
+      'dir_uri': dir.uri,
+      'count': files.length,
+      'assets': [for (final f in files.take(limit)) f.toJson()],
+      if (files.length > limit) 'truncated': true,
+    };
+  }
+
+  /// 读素材库里的一个文件（base64 返回，AI 可直接看图 / 读内容）。
+  Future<Object> _readAsset(Map<String, dynamic> a) async {
+    final lib = AssetLibrary.instance;
+    final name = a['name'] as String?;
+    if (name == null || name.isEmpty) {
+      throw _ToolFailure('需要 name（素材库里的文件名，先用 list_asset_library 看）');
+    }
+    if (lib.dir == null) {
+      throw _ToolFailure('还没设置素材库，先让用户在 App 里选一个素材库目录');
+    }
+    final maxBytes = (a['max_bytes'] as num?)?.toInt() ?? 512000;
+    final data = await lib.read(name);
+    if (data == null) {
+      final files = await lib.list();
+      throw _ToolFailure('读不到素材「$name」。素材库现有：'
+          '${files.map((f) => f.name).join('、')}');
+    }
+    if (data.length > maxBytes) {
+      throw _ToolFailure(
+          '素材「$name」是 ${data.length} 字节，超过 max_bytes=$maxBytes，'
+          'base64 会撑爆响应。调大 max_bytes 再试，或先确认它确实是你要的文件');
+    }
+    return {
+      'name': name,
+      'size': data.length,
+      'mime': _guessMime(name),
+      'base64': base64Encode(data),
+    };
+  }
+
+  /// 把一份素材写进素材库（同名原地覆盖）。图片给 base64、文本给 text。
+  /// 不碰 ROM 会话，因此不走通用 dry_run。
+  Future<Object> _writeAsset(Map<String, dynamic> a) async {
+    final lib = AssetLibrary.instance;
+    final name = a['name'] as String?;
+    if (name == null || name.isEmpty) {
+      throw _ToolFailure('需要 name（要写入的文件名，如 lyn.png）');
+    }
+    if (lib.dir == null) {
+      throw _ToolFailure('还没设置素材库，先让用户在 App 里选一个素材库目录');
+    }
+    final b64 = a['base64'] as String?;
+    final text = a['text'] as String?;
+    final Uint8List bytes;
+    if (b64 != null && b64.isNotEmpty) {
+      try {
+        bytes = Uint8List.fromList(base64Decode(b64));
+      } catch (_) {
+        throw _ToolFailure('base64 不是合法编码');
+      }
+    } else if (text != null) {
+      bytes = Uint8List.fromList(utf8.encode(text));
+    } else {
+      throw _ToolFailure('需要 base64（图片等二进制）或 text（文本）之一作为内容');
+    }
+    final ok = await lib.write(name, bytes);
+    if (!ok) {
+      throw _ToolFailure('写入素材库失败：${lib.lastError ?? '未知原因'}');
+    }
+    return {
+      'ok': true,
+      'name': name,
+      'size': bytes.length,
+      'mime': _guessMime(name),
+    };
+  }
+
+  // ---------------- AssetStore（handle 通道） ----------------
+  //
+  // 纪律：这一组工具**任何返回值都不得含内容**（不返回 base64 / bytes），
+  // 否则就退化回「AI 搬运字节」，大文件必撞墙。测试里有断言锁住。
+
+  /// 当前会话对应的项目素材仓库。项目 ID = ROM 指纹。
+  AssetStore _storeFor(RomSession s) {
+    final project = s.fingerprint.toRadixString(16).padLeft(16, '0');
+    return assetStoreFactory?.call(project) ?? AssetStore(project: project);
+  }
+
+  Future<Object> _listAssets(Map<String, dynamic> a) async {
+    final s = awaitSessionSync(a);
+    final store = _storeFor(s);
+    final type = a['type'] as String?;
+    final assets = await store.list(type: type);
+    final used = await store.totalBytes();
+    return {
+      'project': store.project,
+      'count': assets.length,
+      'total_bytes': used,
+      'assets': [for (final x in assets) x.toJson()],
+      if (type == null)
+        'hint': '想只列某一类就给 type（image / portrait_sheet / map_plan / audio / binary）',
+    };
+  }
+
+  Future<Object> _assetInfo(Map<String, dynamic> a) async {
+    final s = awaitSessionSync(a);
+    final handle = (a['handle'] as String?)?.trim();
+    if (handle == null || handle.isEmpty) {
+      throw _ToolFailure('需要 handle（先用 list_assets 看有哪些）');
+    }
+    final asset = await _storeFor(s).info(handle);
+    if (asset == null) throw _ToolFailure('没有 handle 为「$handle」的素材');
+    return asset.toJson();
+  }
+
+  /// 从素材库（SAF）导入一份素材到项目 AssetStore，返回 handle。
+  /// 字节全程在原生侧走，**不经过 AI**，所以 1MB 的图也一步入库。
+  Future<Object> _importAssetFromLibrary(Map<String, dynamic> a) async {
+    final s = awaitSessionSync(a);
+    final name = (a['name'] as String?)?.trim();
+    if (name == null || name.isEmpty) {
+      throw _ToolFailure('需要 name（素材库里的文件名，先用 list_asset_library 看）');
+    }
+    try {
+      final asset = await _storeFor(s).importFromLibrary(name);
+      return {...asset.toJson(), 'imported_from': 'library'};
+    } on AssetStoreException catch (e) {
+      throw _ToolFailure(e.message);
+    }
+  }
+
+  /// 解析 source 参数（同样兼容 JSON 字符串与对象）。
+  Map<String, dynamic> _jsonMapOf(Object? raw, String name) {
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {
+        throw _ToolFailure('$name 不是合法 JSON：$raw');
+      }
+    }
+    throw _ToolFailure('需要 $name，例如 {"kind":"portrait_png","id":11}');
+  }
+
+  /// 解析 target 参数：既接受 JSON 字符串（AI 常这么传），也接受对象。
+  Map<String, dynamic> _targetOf(Map<String, dynamic> a) {
+    final raw = a['target'];
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {
+        throw _ToolFailure('target 不是合法 JSON：$raw');
+      }
+    }
+    throw _ToolFailure('需要 target，例如 {"kind":"portrait","id":11}');
+  }
+
+  /// 把一个素材（handle）写进 ROM。目前支持 portrait（写到肖像表条目）。
+  Future<Object> _importAsset(Map<String, dynamic> a) async {
+    final s = awaitSessionSync(a);
+    final handle = (a['handle'] as String?)?.trim();
+    if (handle == null || handle.isEmpty) {
+      throw _ToolFailure('需要 handle（先用 list_assets / import_asset_from_library 拿）');
+    }
+    final target = _targetOf(a);
+    final kind = (target['kind'] as String?)?.trim();
+    if (kind != 'portrait') {
+      throw _ToolFailure('现在只支持 kind=portrait（target: {kind:"portrait", id:<肖像ID>}）；'
+          '地图与音频的 Converter 还没接上');
+    }
+    final portraitId = (target['id'] as num?)?.toInt();
+    if (portraitId == null) throw _ToolFailure('portrait 需要 target.id（肖像 ID）');
+
+    final store = _storeFor(s);
+    final asset = await store.info(handle);
+    if (asset == null) throw _ToolFailure('没有 handle 为「$handle」的素材');
+    final bytes = await store.read(handle);
+    if (bytes == null) throw _ToolFailure('读不到素材内容（$handle）');
+
+    final dry = _dryRun(a);
+    final converted = Converters.portraitFromPng(
+      bytes,
+      fe6: s.rom.rom.table.portraitDataSize == 16,
+      mapFace: a['map_face'] != false,
+    );
+    if (converted == null) {
+      throw _ToolFailure('这份素材不是可解码的 PNG（8 位非交错 RGB/RGBA/灰度/调色板）');
+    }
+    final out = PortraitPorter(s.rom).importFace(
+      converted.data,
+      portraitId,
+      fixedExpression: a['fixed_expression'] != false,
+      replaceMapFace: a['map_face'] != false,
+    );
+    if (!out.ok) throw _ToolFailure(out.message);
+    await store.addRef(handle, '${s.versionId}:portrait:$portraitId');
+    return {
+      'dry_run': dry,
+      'handle': handle,
+      'target': {'kind': 'portrait', 'id': portraitId},
+      'entry_address': out.entryAddress,
+      'bytes_written': out.bytesWritten,
+      'conversion': converted.summary(),
+      'ref': '${s.versionId}:portrait:$portraitId',
+      'changed_bytes': s.rom.changedByteCount,
+    };
+  }
+
+  /// 把 ROM 里的素材导出成 AssetStore 里的一个 handle（不返回字节）。
+  Future<Object> _exportAssetFromRom(Map<String, dynamic> a) async {
+    final s = awaitSessionSync(a);
+    final source = _jsonMapOf(a['source'], 'source');
+    final kind = (source['kind'] as String?)?.trim();
+    if (kind != 'portrait_png' && kind != 'battle_anim_frame') {
+      throw _ToolFailure('source.kind 目前支持 portrait_png / battle_anim_frame');
+    }
+    final Uint8List png;
+    String name;
+    if (kind == 'portrait_png') {
+      final id = (source['id'] as num?)?.toInt() ?? 0;
+      final imageKind = (source['image'] as String?) ?? 'face';
+      final reader = PortraitReader(s.rom.liveRom);
+      final tile = switch (imageKind) {
+        'map_face' => reader.mapFaceImage(id),
+        'class_card' => reader.classCardImage(id),
+        _ => reader.faceImage(id),
+      };
+      reader.dispose();
+      if (tile == null) throw _ToolFailure('肖像 $id 没有「$imageKind」图像');
+      png = encodePng(tile);
+      name = 'portrait_${id.toString().padLeft(3, '0')}_$imageKind.png';
+    } else {
+      final id = (source['id'] as num?)?.toInt() ?? 0;
+      final modeIndex = (source['mode'] as num?)?.toInt() ?? 0;
+      final frame = (source['frame'] as num?)?.toInt() ?? 0;
+      final group = (source['palette'] as num?)?.toInt() ?? 0;
+      final r = BattleAnimReader(s.rom.liveRom);
+      final e = r.entry(id);
+      if (e == null) throw _ToolFailure('没有第 $id 条战斗动画');
+      final modes = r.modesOf(e);
+      final mode = modes.where((m) => m.index == modeIndex).firstOrNull;
+      if (mode == null) throw _ToolFailure('模式 $modeIndex 不存在');
+      final img = r.renderFrame(e, mode, frame, paletteGroup: group);
+      if (img == null) throw _ToolFailure('渲染失败：模式 $modeIndex 第 $frame 帧');
+      png = encodePng(img);
+      name = 'anim_${e.abbr}_${modeIndex}_$frame.png';
+    }
+    final store = _storeFor(s);
+    final asset = await store.put(
+      png,
+      type: 'image',
+      mime: 'image/png',
+      origin: 'export',
+      sourceName: name,
+    );
+    return {...asset.toJson(), 'exported_from': kind};
+  }
+
+  /// 跨会话直连：把一份素材（handle）搬到另一个已打开的 ROM 并写入。
+  /// 全程内存，不落盘、不经 AI。
+  Future<Object> _copyAssetBetweenSessions(Map<String, dynamic> a) async {
+    final ws = _workspace;
+    if (ws == null || ws.isEmpty) throw _ToolFailure('还没有打开任何 ROM');
+    final handle = (a['handle'] as String?)?.trim();
+    if (handle == null || handle.isEmpty) throw _ToolFailure('需要 handle');
+    final toVersion = (a['to'] as String?)?.trim();
+    if (toVersion == null || toVersion.isEmpty) {
+      throw _ToolFailure('需要 to（目标 ROM 版本代号，如 FE8U）');
+    }
+    final target = ws.sessions
+        .where((s) => s.versionId.toLowerCase() == toVersion.toLowerCase())
+        .firstOrNull;
+    if (target == null) {
+      throw _ToolFailure('没有打开版本为「$toVersion」的 ROM。'
+          '已打开：${ws.sessions.map((s) => s.versionId).join('、')}');
+    }
+    final dest = _targetOf(a);
+    if ((dest['kind'] as String?) != 'portrait') {
+      throw _ToolFailure('现在只支持 target: {kind:"portrait", id:<肖像ID>}');
+    }
+    final id = (dest['id'] as num?)?.toInt();
+    if (id == null) throw _ToolFailure('portrait 需要 target.id');
+
+    var asset = await _storeFor(target).info(handle);
+    Uint8List? bytes = asset == null ? null : await _storeFor(target).read(handle);
+    if (bytes == null) {
+      for (final other in ws.sessions) {
+        final st = _storeFor(other);
+        final found = await st.info(handle);
+        if (found != null) {
+          asset = found;
+          bytes = await st.read(handle);
+          break;
+        }
+      }
+    }
+    if (asset == null || bytes == null) {
+      throw _ToolFailure('没有 handle 为「$handle」的素材（项目间不共享素材）');
+    }
+    final converted = Converters.portraitFromPng(
+      bytes,
+      fe6: target.rom.rom.table.portraitDataSize == 16,
+      mapFace: a['map_face'] != false,
+    );
+    if (converted == null) throw _ToolFailure('素材不是可解码的 PNG');
+    final out = PortraitPorter(target.rom).importFace(
+      converted.data,
+      id,
+      fixedExpression: a['fixed_expression'] != false,
+      replaceMapFace: a['map_face'] != false,
+    );
+    if (!out.ok) throw _ToolFailure(out.message);
+    // 目标项目自己也得留下这条素材：不然它记录了引用、却没有任何素材本体。
+    // 跨会话不共享仓库，所以这里把字节落进目标项目的 AssetStore（同内容去重）。
+    final destStore = _storeFor(target);
+    await destStore.put(
+      bytes,
+      type: asset.type,
+      mime: asset.mime,
+      origin: 'copy_from_${ws.active?.versionId ?? 'other'}',
+      sourceName: asset.sourceName,
+    );
+    await destStore.addRef(handle, '${target.versionId}:portrait:$id');
+    return {
+      'handle': handle,
+      'to': target.versionId,
+      'target': {'kind': 'portrait', 'id': id},
+      'bytes_written': out.bytesWritten,
+      'conversion': converted.summary(),
+    };
+  }
+
+  Future<Object> _deleteAsset(Map<String, dynamic> a) async {
+    final s = awaitSessionSync(a);
+    final handle = (a['handle'] as String?)?.trim();
+    if (handle == null || handle.isEmpty) throw _ToolFailure('需要 handle');
+    try {
+      await _storeFor(s).delete(handle, force: a['force'] == true);
+      return {'deleted': handle, 'force': a['force'] == true};
+    } on AssetStoreException catch (e) {
+      throw _ToolFailure(e.message);
+    }
+  }
+
+  /// 按扩展名猜 MIME（给客户端 / AI 判断内容类型）。
+  String _guessMime(String name) {
+    final l = name.toLowerCase();
+    if (l.endsWith('.png')) return 'image/png';
+    if (l.endsWith('.jpg') || l.endsWith('.jpeg')) return 'image/jpeg';
+    if (l.endsWith('.webp')) return 'image/webp';
+    if (l.endsWith('.gif')) return 'image/gif';
+    if (l.endsWith('.txt') || l.endsWith('.md')) return 'text/plain';
+    if (l.endsWith('.json')) return 'application/json';
+    return 'application/octet-stream';
   }
 
   Object _readText(Map<String, dynamic> a) {
@@ -1535,6 +2065,7 @@ class McpServer {
               'y': u.y,
               'allegiance': u.allegiance,
               'level': u.level,
+              'items': u.items,
             }
         ],
       });
@@ -1669,6 +2200,20 @@ class McpServer {
     }
 
     if (chars is num) writeU8(addr, chars.toInt().clamp(1, 0xFF), 'char_id');
+    final classId = a['class_id'];
+    if (classId is num) {
+      writeU8(addr + 1, classId.toInt().clamp(0, 0xFF), 'class_id');
+    }
+    // 道具槽：4 个 u8，原地覆盖（FE8 在 +12，FE6/FE7 在 +8）
+    final items = a['items'];
+    if (items is List) {
+      final itemsBase = addr + (isFe8 ? 12 : 8);
+      for (var k = 0; k < items.length && k < 4; k++) {
+        final v = items[k];
+        if (v is! num) continue;
+        writeU8(itemsBase + k, v.toInt().clamp(0, 0xFF), 'item${k + 1}');
+      }
+    }
     if (x is num || y is num || level is num || allegiance is num) {
       // grow 字节：bit0 未知，bit1-2 阵营，bit3-7 等级
       final growAt = addr + 3;
@@ -1706,12 +2251,16 @@ class McpServer {
       }
     }
 
+    var bytesToChange = 0;
+    for (final label in patch.keys) {
+      bytesToChange += (label == 'pos') ? 2 : 1;
+    }
     return {
       'dry_run': dry,
       'addr': addr,
       'changes': patch,
       'changed_n': patch.length,
-      'changed_bytes': s.rom.changedByteCount,
+      'changed_bytes': dry ? bytesToChange : s.rom.changedByteCount,
     };
   }
 
@@ -1825,6 +2374,10 @@ class McpServer {
 
     // 改完把该条读回来给调用方确认
     final after = dry ? unit : units.unitAt(unit.addr);
+    var bytesToChange = 0;
+    for (final label in changes.keys) {
+      bytesToChange += (label == 'pos') ? 2 : 1;
+    }
     return {
       'dry_run': dry,
       'chapter': chapter,
@@ -1847,7 +2400,7 @@ class McpServer {
               'y': after.y,
               'allegiance': after.allegiance.code,
             },
-      'changed_bytes': s.rom.changedByteCount,
+      'changed_bytes': dry ? bytesToChange : s.rom.changedByteCount,
     };
   }
 
@@ -1857,6 +2410,127 @@ class McpServer {
   /// 所以“换脸”需要两下：移植素材 + 改这里的 face 字段。
   /// **FE6 的 face = 肖像索引 + 1**，换算只能走 PortraitReader，
   /// 直接写肖像 ID 会让整张角色表偏一格。
+  /// 用外部图片（PNG base64）生成肖像数据，写入目标肖像条目。
+  ///
+  /// 只换**正脸与调色板**；地图头像 / 嘴型 / 眨眼帧原样保留。
+  /// PNG 解码走 `PngDecoder`（同步，不依赖 `dart:ui`）；
+  /// JPG 请先在界面里转好再导入。
+  Object _importPortraitImage(Map<String, dynamic> a) {
+    final s = awaitSessionSync(a);
+    final targetId = (a['target_id'] as num?)?.toInt();
+    if (targetId == null) {
+      throw _ToolFailure('需要 target_id（要替换的肖像 ID，见 list_portraits）');
+    }
+    final b64 = a['png_base64'] as String?;
+    if (b64 == null || b64.isEmpty) {
+      throw _ToolFailure('需要 png_base64（PNG 图片的 base64；只支持 PNG，JPG 请先在界面里转）');
+    }
+
+    final Uint8List bytes;
+    try {
+      bytes = base64Decode(b64);
+    } catch (_) {
+      throw _ToolFailure('png_base64 不是合法的 base64');
+    }
+
+    final rgba = PngDecoder.decodeRgba(bytes);
+    if (rgba == null) {
+      throw _ToolFailure('PNG 解码失败：只支持非交错 8 位的 RGB/RGBA/灰度/调色板 PNG');
+    }
+
+    // 宽高交给解码器推算（每像素 4 字节）
+    final pixelCount = rgba.length ~/ 4;
+    final width = _guessPngWidth(bytes);
+    if (width <= 0 || pixelCount % width != 0) {
+      throw _ToolFailure('PNG 宽高信息异常');
+    }
+    final height = pixelCount ~/ width;
+
+    final fitName = a['fit'] as String? ?? 'contain';
+    final fit = switch (fitName) {
+      'contain' => PortraitFit.contain,
+      'cover' => PortraitFit.cover,
+      _ => throw _ToolFailure('未知 fit「$fitName」，可用 contain / cover'),
+    };
+
+    final fixedExpression = a['fixed_expression'] != false; // 默认 true
+    final withMapFace = a['map_face'] != false; // 默认 true
+    final strategyName = a['strategy'] as String? ?? 'natural';
+    final strategy = switch (strategyName) {
+      'natural' => PortraitQuantStrategy.natural,
+      'classic' => PortraitQuantStrategy.classic,
+      'dither' => PortraitQuantStrategy.dither,
+      'bright' => PortraitQuantStrategy.bright,
+      _ => throw _ToolFailure(
+          '未知 strategy「$strategyName」，可用 natural / classic / dither / bright'),
+    };
+
+    final data = PortraitImporter.convertRgba(
+      rgba,
+      width,
+      height,
+      fe6: s.rom.rom.table.portraitDataSize == 16,
+      fit: fit,
+      mapFace: withMapFace,
+      mouthX: PortraitReader(s.rom.rom).entryAt(targetId)?.mouthX,
+      mouthY: PortraitReader(s.rom.rom).entryAt(targetId)?.mouthY,
+      strategy: strategy,
+    );
+
+    final dry = _dryRun(a);
+    final beforeSampler = _portraitEntrySnapshot(s, targetId);
+    final out = PortraitPorter(s.rom).importFace(
+      data,
+      targetId,
+      fixedExpression: fixedExpression,
+      replaceMapFace: withMapFace,
+    );
+    if (!out.ok) throw _ToolFailure(out.message);
+
+    final result = <String, Object?>{
+      'dry_run': dry,
+      'tool': 'import_portrait_image',
+      'target_id': targetId,
+      'entry_address': out.entryAddress,
+      'bytes_written': out.bytesWritten,
+      'free_space_offset': out.freeSpaceOffset,
+      'used_colors': data.usedColors,
+      'hard_mapped_pixels': data.hardMapped,
+      'transparent_ratio':
+          double.parse(data.transparentRatio.toStringAsFixed(4)),
+      'source_size': '$width×$height',
+      'fit': fitName,
+      'strategy': strategy.name,
+      'fixed_expression': fixedExpression,
+      'map_face_replaced': withMapFace,
+      'note': fixedExpression
+          ? '表情已固定（嘴型指针清空、眼嘴坐标移出脸部）：对话时嘴不动、眼不眨，'
+              '但不会串色。地图小头像${withMapFace ? "已一起换" : "保持原样"}。'
+              '用 get_portrait_png / kind=map_face 看图确认。'
+          : '表情未固定：旧嘴型/眼睛会套用新调色板，可能串色（除非颜色恰好兼容）。',
+    };
+    if (beforeSampler != null) result['entry_before'] = beforeSampler;
+    result['changed_bytes'] = s.rom.changedByteCount;
+    return result;
+  }
+
+  /// 从 PNG 的 IHDR 读宽度（PngDecoder 已校验过签名与结构）。
+  int _guessPngWidth(Uint8List png) {
+    if (png.length < 24) return 0;
+    return (png[16] << 24) | (png[17] << 16) | (png[18] << 8) | png[19];
+  }
+
+  Map<String, Object?>? _portraitEntrySnapshot(RomSession s, int id) {
+    final r = PortraitReader(s.liveRom);
+    final e = r.entryAt(id);
+    r.dispose();
+    if (e == null) return null;
+    return {
+      'unit_face': e.unitFace,
+      'palette': e.palette,
+    };
+  }
+
   Object _attachPortrait(Map<String, dynamic> a) {
     final s = awaitSessionSync(a);
     final unitId = _requireIndex(a, 'id', s.liveRom.unitCount);
@@ -2574,7 +3248,7 @@ class McpServer {
         },
         'portraits': portraitCount,
         'battle_anims': mapAnim.available ? mapAnim.entries.length : 0,
-        'chapters': chapters,
+        'chapter_count': chapters,
       },
       'editable': {
         'unit_fields': [for (final f in unitEditableFieldsFor(fe6: rom.isFe6)) f.label],
@@ -2603,8 +3277,12 @@ class McpServer {
         'note': '单位表没有阵营字段；判我方靠支援互惠/章节出场，'
             '不要用「索引 < N」',
       },
+      // 章节清单只给前 N 章：完整清单用 list_chapters。
+      // describe_rom 是「开局自述」，把 100+ 章的明细全塞进来会让响应
+      // 逼近两万字符——桥接层走主线程传输，大响应期间 UI 一卡就容易
+      // 撞上 90 秒超时（表现为「MCP 卡住」）。
       'chapters': [
-        for (var i = 0; i < chapters; i++)
+        for (var i = 0; i < chapters && i < _describeChapterLimit; i++)
           {
             'id': i,
             'title': placement.chapterTitle(i),
@@ -2613,6 +3291,9 @@ class McpServer {
             'has_units': placement.slotSupported(placement.defaultSlot),
           }
       ],
+      if (chapters > _describeChapterLimit)
+        'chapters_note': '只列了前 $_describeChapterLimit 章（共 $chapters 章）；'
+            '完整清单用 list_chapters',
       'tools_workflow': [
         '改前先 snapshot（可选）或 preview_edit / dry_run=true 预演',
         '改完之后跑 validate_rom 体检',
@@ -2831,6 +3512,34 @@ final List<McpToolDef> toolDefinitions = [
     required: ['id', 'field', 'value'],
   ),
   McpToolDef(
+    name: 'get_class_terrain',
+    description: '读一个职业的地形相关表：移动消耗（晴/雨/雪）与地形回避/防御/魔防、'
+        '按地形 ID 索引的 s8 数组（地形 0..65）。-1 表示不可通行（移动）或无修正。'
+        '同时返回这些表被哪些其它职业共享（改一处会一起变）。',
+    properties: {
+      'id': McpArg.integer('职业表索引'),
+      'terrain': McpArg.integer('只读某一地形 ID（可选，省略则返回全部 66 项）'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['id'],
+  ),
+  McpToolDef(
+    name: 'set_class_terrain',
+    mutating: true,
+    description: '改一个职业某张地形表的某一项（原地覆盖单字节）。'
+        'table 取值：mov_dry / mov_rain / mov_snow / avoid / defense / resistance；'
+        'FE6 没有雨/雪两张移动表。**这些表常被多个职业共享**，改动会影响所有共享者。',
+    properties: {
+      'id': McpArg.integer('职业表索引'),
+      'table': McpArg.string('哪张表：mov_dry / mov_rain / mov_snow / avoid / defense / resistance'),
+      'terrain': McpArg.integer('地形 ID 0~65'),
+      'value': McpArg.integer('新值 -128~127（-1 = 不可通行/无修正）'),
+      'dry_run': McpArg.boolean('只预演不写入'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['id', 'table', 'terrain', 'value'],
+  ),
+  McpToolDef(
     name: 'list_items',
     description: '列出道具表（名字、种类、威力、耐久）。',
     properties: {'rom': McpArg.string('版本代号')},
@@ -2917,10 +3626,12 @@ final List<McpToolDef> toolDefinitions = [
   McpToolDef(
     name: 'get_portrait_png',
     description: '把一张肖像导出成 base64 PNG，AI 可直接看图判断是谁。'
-        'kind 可选 face（默认 96×80 正脸）/ map_face（32×32）/ class_card（80×80）。',
+        'kind 可选 face（默认 96×80 正脸）/ map_face（32×32）/ class_card（80×80）/ '
+        'mouth_frame（嘴型帧，配 frame 1..6）/ eye_half（半目）/ eye_closed（闭眼）。',
     properties: {
       'id': McpArg.integer('肖像 ID'),
-      'kind': McpArg.string('face / map_face / class_card，默认 face'),
+      'kind': McpArg.string('face / map_face / class_card / mouth_frame / eye_half / eye_closed，默认 face'),
+      'frame': McpArg.integer('kind=mouth_frame 时的帧号 1..6'),
       'rom': McpArg.string('版本代号'),
     },
     required: ['id'],
@@ -3095,6 +3806,133 @@ final List<McpToolDef> toolDefinitions = [
     required: ['name'],
   ),
   McpToolDef(
+    name: 'list_asset_library',
+    description:
+        '列出素材库目录里的文件（用户已授权的素材存放目录，如导出的肖像/战斗动画帧/图标）。'
+        '返回目录路径(dir_uri)、显示名(dir_name)与文件清单(assets)。AI 想确认素材库现状或读某个素材时用它。'
+        '未设置素材库时 configured=false 并给出提示。',
+    properties: {
+      'limit': McpArg.integer('最多列出多少个文件，默认 100'),
+    },
+  ),
+  McpToolDef(
+    name: 'read_asset',
+    description:
+        '读素材库里的一个文件，返回 base64（AI 可直接看图 / 读内容）与 mime。'
+        '文件超过 max_bytes（默认 512KB）会拒绝并提示，避免 base64 撑爆响应。'
+        '文件名先用 list_asset_library 拿。',
+    properties: {
+      'name': McpArg.string('素材库里的文件名'),
+      'max_bytes': McpArg.integer('允许返回的最大字节数，默认 512000；文件更大则拒绝并提示'),
+    },
+    required: ['name'],
+  ),
+  McpToolDef(
+    name: 'write_asset',
+    mutating: true,
+    dryRunnable: false,
+    description:
+        '把一份素材写进素材库（同名原地覆盖）。内容给 base64（图片等二进制）或 text（文本）之一。'
+        '不碰 ROM、不支持 dry_run；写错可再写一次覆盖或在 App 里删。',
+    properties: {
+      'name': McpArg.string('要写入的文件名，如 lyn.png'),
+      'base64': McpArg.string('内容的 base64（图片等二进制；与 text 二选一）'),
+      'text': McpArg.string('文本内容（与 base64 二选一）'),
+    },
+    required: ['name'],
+  ),
+  McpToolDef(
+    name: 'list_assets',
+    description:
+        '列出当前项目（= 当前 ROM）的素材库：只返回 handle 与小元数据，'
+        '**不返回任何文件内容**。可选 type 过滤（image / portrait_sheet / map_plan / audio / binary）。'
+        '素材是项目级的（按 ROM 指纹隔离），换 ROM 就是另一套素材。',
+    properties: {
+      'type': McpArg.string('只看某一类（可省）'),
+      'rom': McpArg.string('版本代号'),
+    },
+  ),
+  McpToolDef(
+    name: 'asset_info',
+    description: '看单个素材的元数据（类型/尺寸/大小/引用），不含内容。',
+    properties: {
+      'handle': McpArg.string('素材 handle（list_assets 里拿）'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['handle'],
+  ),
+  McpToolDef(
+    name: 'import_asset_from_library',
+    description:
+        '把素材库（用户已授权的设备目录）里的一个文件导进本项目素材库，返回 handle。'
+        '**字节全程在 App 内部搬运，不经过 AI**，所以 1MB 的图也一步入库——'
+        '要导大文件就用它，不要用 read_asset 读 base64。',
+    properties: {
+      'name': McpArg.string('素材库里的文件名（先 list_asset_library）'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['name'],
+  ),
+  McpToolDef(
+    name: 'import_asset',
+    mutating: true,
+    description:
+        '把一个素材（handle）写进 ROM。**只接受 handle，不接受 base64。**'
+        '目前支持 target={kind:"portrait", id:<肖像ID>}（PNG → 4bpp + 16 色量化在 App 侧做）。'
+        '地图/音频的 Converter 还没接上，会明确报错。',
+    properties: {
+      'handle': McpArg.string('素材 handle'),
+      'target': McpArg.string('目标槽位：{"kind":"portrait","id":11}'),
+      'map_face': McpArg.boolean('是否同时换 32×32 地图小头像（默认 true）'),
+      'fixed_expression': McpArg.boolean('是否固定嘴型/眨眼帧（默认 true，避免串色）'),
+      'dry_run': McpArg.boolean('只预演不写入：实际执行后立即回滚'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['handle', 'target'],
+  ),
+  McpToolDef(
+    name: 'export_asset_from_rom',
+    description:
+        '把 ROM 里的素材导出成素材库里的一个 handle（**不返回字节**）。'
+        'source.kind：portrait_png（配 id，可选 image=face/map_face/class_card）'
+        '或 battle_anim_frame（配 id/mode/frame/palette）。',
+    properties: {
+      'source': McpArg.string('来源：{"kind":"portrait_png","id":11}'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['source'],
+  ),
+  McpToolDef(
+    name: 'copy_asset_between_sessions',
+    mutating: true,
+    description:
+        '跨 ROM 直连：把一份素材（handle）写进另一个已打开的 ROM。'
+        '全程内存，不落盘、不经 AI。to 是目标 ROM 版本代号。'
+        '目前只支持 target={kind:"portrait", id:<肖像ID>}。',
+    properties: {
+      'handle': McpArg.string('素材 handle'),
+      'to': McpArg.string('目标 ROM 版本代号（如 FE8U）'),
+      'target': McpArg.string('{"kind":"portrait","id":11}'),
+      'map_face': McpArg.boolean('同时换地图小头像（默认 true）'),
+      'dry_run': McpArg.boolean('只预演不写入'),
+    },
+    required: ['handle', 'to', 'target'],
+  ),
+  McpToolDef(
+    name: 'delete_asset',
+    mutating: true,
+    dryRunnable: false,
+    description:
+        '删除一个素材。被 ROM 槽位引用时默认拒绝（会列出引用），'
+        '确实要删传 force=true。',
+    properties: {
+      'handle': McpArg.string('素材 handle'),
+      'force': McpArg.boolean('有引用也强删（默认 false）'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['handle'],
+  ),
+  McpToolDef(
     name: 'list_chapter_dialogs',
     description:
         '列出某章事件脚本引用的对话文本（按出现顺序、按 ID 去重）。'
@@ -3186,15 +4024,18 @@ final List<McpToolDef> toolDefinitions = [
   McpToolDef(
     name: 'set_chapter_event_unit',
     mutating: true,
-    description: '改事件脚本里动态生成的单位（剧情增援）的字段：角色/等级/坐标/阵营。'
-        '**只做原地覆盖**，不会插入或删除脚本指令。addr 为结构体地址。',
+    description: '改事件脚本里动态生成的单位（剧情增援）的字段：'
+        '角色/职业/等级/坐标/阵营/携带道具。'
+        '**只做原地字段覆盖**，不会插入或删除脚本指令。addr 为结构体地址。',
     properties: {
       'addr': McpArg.integer('单位结构体地址（文件偏移）'),
       'char_id': McpArg.integer('角色 ID'),
+      'class_id': McpArg.integer('职业 ID（0 = 用角色默认职业）'),
       'level': McpArg.integer('等级 0~31'),
       'x': McpArg.integer('X 坐标'),
       'y': McpArg.integer('Y 坐标'),
       'allegiance': McpArg.integer('阵营：0 我方 1 敌方 2 友军'),
+      'items': McpArg.array('四个道具槽的 ID（从第 1 格起逐项覆盖，0 = 空；最多 4 个）'),
       'dry_run': McpArg.boolean('只预演不写入'),
       'rom': McpArg.string('版本代号'),
     },
@@ -3228,6 +4069,28 @@ final List<McpToolDef> toolDefinitions = [
       'rom': McpArg.string('版本代号'),
     },
     required: ['chapter'],
+  ),
+  McpToolDef(
+    name: 'import_portrait_image',
+    mutating: true,
+    description: '把一张 PNG 图片转成游戏肖像，写入指定条目：正脸、调色板、'
+        '32×32 地图小头像（默认一起换），并把表情设为固定（关闭嘴型/眨眼帧）。'
+        '自动缩放到 96×80、中位切分量化到 16 色、索引 0 作透明背景。'
+        '**固定表情是必需的**：旧嘴型/眼睛与正脸共用同一套 16 色调色板，'
+        '只换正脸会让它们串色。PNG 解码同步；JPG 请先在界面转成 PNG。',
+    properties: {
+      'target_id': McpArg.integer('要替换的肖像 ID（见 list_portraits）'),
+      'png_base64': McpArg.string('PNG 图片的 base64（只支持非交错 8 位 PNG）'),
+      'fit': McpArg.string('contain（完整放入，默认）/ cover（填满裁切）'),
+      'strategy': McpArg.string(
+          '量化风格（默认 natural）：natural 自然 / classic 高对比纯色块（原版质感）/ dither 误差扩散抖动（细腻渐变）/ bright 提亮高饱和（明亮色彩）'),
+      'fixed_expression': McpArg.boolean(
+          '默认 true：关闭嘴型与眨眼帧（旧素材与正脸共用调色板，留着会串色）'),
+      'map_face': McpArg.boolean('默认 true：同时生成并替换 32×32 地图小头像'),
+      'dry_run': McpArg.boolean('只预演不写入'),
+      'rom': McpArg.string('版本代号'),
+    },
+    required: ['target_id', 'png_base64'],
   ),
   McpToolDef(
     name: 'attach_portrait_to_unit',
@@ -3483,8 +4346,9 @@ class McpResource {
       };
 
   Future<String> readAll(McpServer server) async {
-    // 工作区列表与「是否打开了 ROM」无关：没打开任何 ROM 时也能看有哪些可选基底
+    // 工作区/素材库列表与「是否打开了 ROM」无关：没打开任何 ROM 时也能看
     if (uri == 'fe://workspace/roms') return _workspaceRoms(null);
+    if (uri == 'fe://workspace/assets') return _assetLibrary();
     final s = server.currentSessionOrNull();
     if (s == null) return '# 还没有打开任何 ROM\n\n请先在 App 里打开一个 GBA 火纹 ROM。';
     switch (uri) {
@@ -3512,6 +4376,7 @@ class McpResource {
       return sb.toString();
     }
     sb.writeln('- 目录：${dir.name}');
+    sb.writeln('- 路径：${dir.uri}');
     final roms = await ws.listRoms();
     sb.writeln('- ROM 数量：${roms.length}');
     sb.writeln();
@@ -3526,6 +4391,35 @@ class McpResource {
     }
     sb.writeln();
     sb.writeln('用 `open_workspace_rom(name)` 打开其中一个。');
+    return sb.toString();
+  }
+
+  /// 素材库文件清单（Markdown 渲染，客户端直接展示）。
+  Future<String> _assetLibrary() async {
+    final lib = AssetLibrary.instance;
+    final dir = lib.dir;
+    final sb = StringBuffer('# 素材库\n\n');
+    if (dir == null) {
+      sb.writeln('还没设置素材库目录。');
+      sb.writeln();
+      sb.writeln('请用户在 App 里选一个素材库目录（存导出肖像/动画帧/图标等），'
+          '之后这里就会列出目录里的文件，也可以用 `list_asset_library` 查看。');
+      return sb.toString();
+    }
+    sb.writeln('- 目录：${dir.name}');
+    sb.writeln('- 路径：${dir.uri}');
+    final files = await lib.list();
+    if (files.isEmpty) {
+      sb.writeln('- （空目录）');
+      return sb.toString();
+    }
+    sb.writeln('| 文件名 | 大小 |');
+    sb.writeln('|---|---|');
+    for (final f in files) {
+      sb.writeln('| ${f.name} | ${f.sizeLabel} |');
+    }
+    sb.writeln();
+    sb.writeln('用 `list_asset_library` 查看 JSON 清单。');
     return sb.toString();
   }
 
@@ -3803,6 +4697,11 @@ final List<McpResource> mcpResources = const [
     uri: 'fe://workspace/roms',
     name: '外部工作区 ROM 列表',
     description: '用户授权的 ROM 存放目录里有哪些文件（含大小与文本引擎判断用信息）',
+  ),
+  McpResource(
+    uri: 'fe://workspace/assets',
+    name: '素材库文件清单',
+    description: '用户授权的素材库目录路径与文件清单（导出肖像/动画帧/图标等）',
   ),
 ];
 

@@ -4,7 +4,9 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/map_sprite.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe6jp =
     '$dir/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba';
 const fe7jp =
@@ -154,7 +156,7 @@ void main() {
 
   test('FE8U（铠甲的呼唤）调色板与站立表都能自动定位', () {
     // 20MB 重度改版：站立表从 0x8AF880 搬到了扩展区，调色板在 0x59EE20。
-    final dir = '/root/workspace/game-rom';
+    final dir = romDir;
     String? path;
     for (final f in Directory(dir).listSync()) {
       if (f.path.contains('铠甲')) path = f.path;

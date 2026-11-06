@@ -10,6 +10,8 @@ import 'package:fe_editor/core/event_preview.dart';
 import 'package:fe_editor/core/map_reader.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 
+import 'rom_paths.dart';
+
 /// 把「封印之剑 第一章」的队伍按同样节奏重建进「烈火之剑 序章」，
 /// 产出一个能在模拟器里跑起来验证的改后 FE7 ROM。
 ///
@@ -21,8 +23,8 @@ import 'package:fe_editor/core/fe_rom.dart';
 /// - 职业/属性暂不改（保持槽自身合法的 FE7 职业），先保证「能进图、人物在场、不崩」。
 void main() {
   test('recreate FE6 ch1 cast into FE7 prologue', () {
-    final fe6 = RomSession.open(File('/root/workspace/game-rom/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba').readAsBytesSync(), 'fe6.gba')!;
-    final fe7 = RomSession.open(File('/root/workspace/game-rom/佣兵公司完全汉化版.gba').readAsBytesSync(), 'fe7.gba')!;
+    final fe6 = RomSession.open(File(romDir + '/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba').readAsBytesSync(), 'fe6.gba')!;
+    final fe7 = RomSession.open(File(romDir + '/佣兵公司完全汉化版.gba').readAsBytesSync(), 'fe7.gba')!;
 
     final fe6Rom = fe6.rom.liveRom;
     final edit = fe7.rom;
@@ -88,7 +90,7 @@ void main() {
       expect(ids, contains(want), reason: 'charId $want 没进序章事件');
     }
 
-    final out = File('/root/workspace/game-rom/_fe7_fe6ch1.gba')
+    final out = File(romDir + '/_fe7_fe6ch1.gba')
       ..writeAsBytesSync(edit.data);
     print('  [导出] ${out.path} (${edit.data.length}B, 改 ${edit.changedByteCount} 字节)');
   });

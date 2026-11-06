@@ -320,6 +320,20 @@ class EditableRom {
   late final RomBuffer buffer;
   late final SupportTable _support;
 
+  /// 内容版本号：写入、撤销全部、回滚都会让它变化。
+  ///
+  /// 图像缓存（肖像 / 地图小人 / 战斗动画）与肖像 reader 的 sheet 缓存
+  /// 都靠它判定「图是否已过期」。以前用「谁记得调 invalidate」的方式维护，
+  /// 漏调一处就会一直显示旧图（实测：导入一张脸后撤销全部，界面仍是导入的那张）。
+  int get contentVersion => liveRom.contentVersion;
+
+  /// 标记内容已变。所有写字节的通道收尾都要调它。
+  ///
+  /// 公开版给不经过写入通道、直接改 [buffer] 的调用方（如快照回滚）。
+  void touchContent() => _touchContent();
+
+  void _touchContent() => liveRom.contentVersion++;
+
   /// 读**实时 buffer** 的 ROM 视图（与 [buffer] 同一份数组）。
   /// 文本/名字被修改后，页面靠它拿到最新值——不能拿 [rom]（那是原始快照，
   /// 改了名字仍显示旧值；同时扫描类逻辑必须用原始快照，两者分离）。
@@ -399,6 +413,7 @@ class EditableRom {
       if (before == value) return false;
       buffer.writeU8(addr, value);
       edits.add(ByteEdit(addr, before, value));
+      _touchContent();
       return true;
     }
     final v = value.clamp(f.min, f.max);
@@ -414,6 +429,7 @@ class EditableRom {
       buffer.writeU8(addr, raw);
     }
     edits.add(ByteEdit(addr, before, raw));
+    _touchContent();
     return true;
   }
 
@@ -434,6 +450,7 @@ class EditableRom {
       edits.add(ByteEdit(at, before, after));
       changed++;
     }
+    if (changed > 0) _touchContent();
     return changed;
   }
 
@@ -476,6 +493,7 @@ class EditableRom {
     if (after == before) return false;
     buffer.writeU32(addr, after);
     edits.add(ByteEdit(addr, before, after));
+    _touchContent();
     return true;
   }
 
@@ -483,6 +501,7 @@ class EditableRom {
   void revertAll() {
     buffer.data.setAll(0, original);
     edits.clear();
+    _touchContent();
   }
 
   // ---------- 支援 ----------
@@ -529,6 +548,7 @@ class EditableRom {
     if (before == v) return false;
     buffer.writeU8(at, v);
     edits.add(ByteEdit(at, before, v));
+    _touchContent();
     return true;
   }
 

@@ -24,6 +24,15 @@ class AppSettings {
   /// 主题变化通知。`FeEditorApp` 监听它重建 MaterialApp。
   final ValueNotifier<int> themeNotifier = ValueNotifier(0);
 
+  /// 上次 MCP 服务器是否在运行。启动时据此决定要不要自动把服务拉起来。
+  bool mcpWasRunning = false;
+
+  /// 上次的「允许局域网访问」开关。
+  bool mcpAllowLan = false;
+
+  /// 上次的访问口令。持久化它，客户端配好的地址 + 口令重启后不用重填。
+  String mcpToken = '';
+
   /// 自定义角色名单，按 ROM 指纹隔离（`romFingerprint -> CustomRoster`）。
   ///
   /// 用指纹当 key 的原因：玩家的名单只对那份 ROM 有意义
@@ -60,6 +69,9 @@ class AppSettings {
           final n = int.tryParse(v);
           if (n != null && n >= 0 && n <= 2) themeModeIndex = n;
         }
+        if (k == 'mcpWasRunning') mcpWasRunning = v == '1';
+        if (k == 'mcpAllowLan') mcpAllowLan = v == '1';
+        if (k == 'mcpToken') mcpToken = v;
         // roster_<指纹>=<JSON>：只做语法层解析，越界检查在使用时按当次 ROM 做
         if (k.startsWith('roster_')) {
           final fpr = int.tryParse(k.substring('roster_'.length));
@@ -84,6 +96,21 @@ class AppSettings {
     await _save();
   }
 
+  /// 持久化 MCP 服务的三项状态。
+  ///
+  /// 口令跟着存：局域网模式下客户端配的是「地址 + 口令」，
+  /// 口令一变电脑端就得重新配，所以重启后要沿用上一次的。
+  Future<void> setMcpConfig({
+    required bool wasRunning,
+    required bool allowLan,
+    required String token,
+  }) async {
+    mcpWasRunning = wasRunning;
+    mcpAllowLan = allowLan;
+    mcpToken = token;
+    await _save();
+  }
+
   static Object? _tryDecode(String raw) {
     try {
       return jsonDecode(raw);
@@ -95,7 +122,10 @@ class AppSettings {
   Future<void> _save() async {
     final buf = StringBuffer()
       ..write('overwriteMode=${overwriteMode ? 1 : 0}\n')
-      ..write('themeMode=$themeModeIndex\n');
+      ..write('themeMode=$themeModeIndex\n')
+      ..write('mcpWasRunning=${mcpWasRunning ? 1 : 0}\n')
+      ..write('mcpAllowLan=${mcpAllowLan ? 1 : 0}\n')
+      ..write('mcpToken=$mcpToken\n');
     for (final e in _rosters.entries) {
       buf.write('roster_${e.key}=${e.value.toJsonString()}\n');
     }

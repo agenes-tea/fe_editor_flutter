@@ -10,7 +10,9 @@ import 'package:fe_editor/core/event_templates.dart';
 import 'package:fe_editor/core/unit_placement.dart';
 import 'package:fe_editor/core/rom_session.dart';
 
-const _dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const _dir = romDir;
 const _files = [
   '火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba', // FE7J
   '1235 - 火炎之纹章-烈火之剑 Fire Emblem(US)(Nintendo)(128Mb).gba', // FE7U

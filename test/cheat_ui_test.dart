@@ -7,7 +7,9 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/playable_units.dart';
 import 'package:fe_editor/ui/cheat_page.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe7jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 
 EditableRom _edit() {

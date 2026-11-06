@@ -4,9 +4,11 @@ import 'package:fe_editor/core/editable_rom.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/text_codec.dart';
 
+import 'rom_paths.dart';
+
 const jp8 =
-    '/root/workspace/game-rom/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
-const cn8 = '/root/workspace/game-rom/火炎之纹章-圣魔之光石汉化.gba';
+    romDir + '/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
+const cn8 = romDir + '/火炎之纹章-圣魔之光石汉化.gba';
 
 void main() {
   test('FE8 日版识别与文本（SJIS）', () async {

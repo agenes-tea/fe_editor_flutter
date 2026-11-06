@@ -6,6 +6,11 @@ import 'fe_rom.dart';
 import 'hex_view.dart';
 import 'lz77_compress.dart';
 import 'portrait.dart';
+import 'portrait_import.dart';
+import 'rom_info.dart' show UnitOffsets;
+
+/// 肖像写回诊断日志（App 内「日志」页可看，方便手机端排查）。
+void _diag(String msg) => AppLog.instance.log('info', '肖像: $msg');
 
 /// 一次肖像移植的结果。
 enum PortraitPortResult {
@@ -50,6 +55,84 @@ class PortraitPortOutcome {
   });
 
   bool get ok => result == PortraitPortResult.ok;
+}
+
+/// 一次肖像导入的结果。
+enum PortraitImportOutcome {
+  /// 写入成功。
+  ok,
+
+  /// 目标 ROM 没有这条肖像。
+  noTargetEntry,
+
+  /// 找不到足够的连续空闲区。
+  noSpace,
+
+  /// 目标版本不支持写肖像。
+  unsupported,
+}
+
+class PortraitImportWriteResult {
+  final PortraitImportOutcome result;
+  final String message;
+  final int targetId;
+  final int entryAddress;
+  final int bytesWritten;
+  final int freeSpaceOffset;
+
+  /// 写回后**实际生效**的表情处理方式（可能与用户选的不同的情况：
+  /// FE6 上没有嘴型指针，选「无嘴型」只能退回「固定」）。
+  final PortraitFrameMode mouthMode;
+  final PortraitFrameMode blinkMode;
+
+  const PortraitImportWriteResult(
+    this.result, {
+    this.message = '',
+    this.targetId = -1,
+    this.entryAddress = -1,
+    this.bytesWritten = 0,
+    this.freeSpaceOffset = -1,
+    this.mouthMode = PortraitFrameMode.real,
+    this.blinkMode = PortraitFrameMode.real,
+  });
+
+  bool get ok => result == PortraitImportOutcome.ok;
+
+  /// 用户选的效果没能完整实现时给出的说明（空串＝没有偏差）。
+  String get frameNote {
+    if (!ok) return '';
+    final notes = <String>[];
+    if (blinkMode == PortraitFrameMode.none) {
+      notes.add('封印之剑没有眨眼帧，这一项不适用');
+    }
+    if (mouthMode == PortraitFrameMode.fixed) {
+      notes.add('嘴型已固定（所有帧用同一块画面，游戏里嘴不动）');
+    }
+    return notes.join('；');
+  }
+}
+
+/// [syncUnitFaces] 的单条变更记录。
+class PortraitSyncChange {
+  final int unitIndex;
+  final String unitName;
+  final int faceBefore;
+  final int faceAfter;
+  const PortraitSyncChange({
+    required this.unitIndex,
+    required this.unitName,
+    required this.faceBefore,
+    required this.faceAfter,
+  });
+}
+
+/// [syncUnitFaces] 的汇总结果。
+class PortraitSyncResult {
+  final int changedCount;
+  final List<PortraitSyncChange> changes;
+  final String? error;
+  const PortraitSyncResult(this.changedCount, this.changes, this.error);
+  bool get ok => error == null;
 }
 
 /// 跨版本肖像移植。
@@ -133,7 +216,7 @@ class PortraitPorter {
         mouthBytes.length +
         mapBytes.length +
         palette.length +
-        32; // 余量，避免紧贴已有数据
+        32; // 余量，避免紧贴已有数据；也包容对齐造成的碎片
     final slot = count;
 
     // 数据与副本表一起规划在一块连续区域里，顺序：数据 → 表副本。
@@ -145,30 +228,33 @@ class PortraitPorter {
       return PortraitPortOutcome(PortraitPortResult.noSpace,
           message: '目标 ROM 找不到 $need 字节的连续空闲区');
     }
-    final tableRegion = region + dataBytes;
 
     var cursor = region;
     final faceAt = cursor;
     target.writeBytes(cursor, faceBytes);
-    cursor += faceBytes.length;
+    cursor = _align4(cursor + faceBytes.length);
 
     var mouthAt = 0;
     if (mouthBytes.isNotEmpty) {
       mouthAt = cursor;
       target.writeBytes(cursor, mouthBytes);
-      cursor += mouthBytes.length;
+      cursor = _align4(cursor + mouthBytes.length);
     }
 
     var mapAt = 0;
     if (mapBytes.isNotEmpty) {
       mapAt = cursor;
       target.writeBytes(cursor, mapBytes);
-      cursor += mapBytes.length;
+      cursor = _align4(cursor + mapBytes.length);
     }
 
     final palAt = cursor;
     target.writeBytes(palAt, palette);
-    cursor += palette.length;
+    cursor = _align4(cursor + palette.length);
+
+    // 表副本接在**实际写完后**的位置（对齐可能多推几个字节）
+    final tableRegion = cursor;
+    cursor += tableBytes + entrySize;
 
     // 复制整张旧表到新位置（内容逐字节保留），新条目接在其后全 0 处
     final d = target.buffer.data;
@@ -235,20 +321,20 @@ class PortraitPorter {
     var cursor = region;
     final faceAt = cursor;
     target.writeBytes(cursor, faceBytes);
-    cursor += faceBytes.length;
+    cursor = _align4(cursor + faceBytes.length);
 
     var mouthAt = 0;
     if (mouthBytes.isNotEmpty) {
       mouthAt = cursor;
       target.writeBytes(cursor, mouthBytes);
-      cursor += mouthBytes.length;
+      cursor = _align4(cursor + mouthBytes.length);
     }
 
     var mapAt = 0;
     if (mapBytes.isNotEmpty) {
       mapAt = cursor;
       target.writeBytes(cursor, mapBytes);
-      cursor += mapBytes.length;
+      cursor = _align4(cursor + mapBytes.length);
     }
 
     final palAt = cursor;
@@ -273,6 +359,10 @@ class PortraitPorter {
   ///
   /// 源 FE6 的 sheet 只有 34 行，目标需要 40 行：多出的 6 行补 0
   /// （对应「脸下方」与「右侧备用眼型」区域，原版这些位置本来就大量为 0）。
+  ///
+  /// FE6 的嘴型四帧在写回前已由 `PortraitImporter.withMouthFrames`
+  /// 按新脸重铺，这里**不能再去清那片区域**——清了就等于把新嘴抹掉，
+  /// 游戏只能拿索引 0（背景色）去贴嘴部。
   List<int> _encodeFace(Uint8List faceIndices) {
     const rowBytes = 128; // 256 / 2
     if (_targetIsFe6) {
@@ -288,6 +378,37 @@ class PortraitPorter {
     data.setRange(0, copy, faceIndices);
     return [0x00, 0x04, 0x10, 0x00, ...data];
   }
+
+  /// 用原条目的调色板索引 0 重建新调色板。
+  ///
+  /// FE6 把索引 0 当**不透明背景色**（罗伊是绿灰 #78a070），而正脸 6 块里
+  /// 近一半像素是索引 0。导入时把索引 0 写成黑色 → 游戏里就是「黑底 +
+  /// 人物」，看着就是花屏。所以必须沿用原条目的索引 0。
+  ///
+  /// **未用到的高位索引也必须填成这个背景色，不能留 0（黑）**：
+  /// 导入图往往只用 2~6 色，剩下的索引全是 0 → 黑色。引擎会用这些索引
+  /// 去画新脸没覆盖到的格子（下部、嘴型帧边角），于是一整片黑斑。
+  Uint8List _paletteWithOriginalIndex0(Uint8List fresh, int usedColors) {
+    final old = _originalPaletteIndex0;
+    if (old == null) return fresh;
+    final out = Uint8List.fromList(fresh);
+    // 第 0 格恒用原条目的背景色
+    if (out.length >= 2) {
+      out[0] = old & 0xFF;
+      out[1] = (old >> 8) & 0xFF;
+    }
+    // `usedColors` 之后的格子是补位（全是 0 = 黑）。只动这些，别碰真实用到的颜色。
+    for (var i = usedColors; i < 16; i++) {
+      final at = i * 2;
+      if (at + 1 >= out.length) break;
+      out[at] = old & 0xFF;
+      out[at + 1] = (old >> 8) & 0xFF;
+    }
+    return out;
+  }
+
+  /// 原条目的调色板索引 0（BGR555 原始 16 位值）；无原条目时为 null。
+  int? _originalPaletteIndex0;
 
   /// 嘴型：源 FE6 没有独立数据 → 空；源 FE7/FE8 原样搬运 32×96 索引。
   List<int> _encodeMouth(PortraitReader source, int id) {
@@ -336,8 +457,242 @@ class PortraitPorter {
     ]);
   }
 
+  /// 把外部图片生成的肖像数据写入目标 ROM 的第 [targetId] 条肖像。
+  ///
+  /// 写入三块：**正脸、调色板、32×32 地图小头像**；嘴型与眨眼帧按
+  /// [data] 自带的 [PortraitFrameMode] 处理（见 [PortraitImportResult.mouthMode]）。
+  ///
+  /// 为什么表情必须一起处理：嘴型图与眼睛帧跟正脸**共用同一套 16 色调色板**，
+  /// 只换正脸会让旧嘴型/旧眼睛套上新颜色（串色）。
+  /// 旧素材本体保留在原处不删（GBA ROM 没有真删除；留着便于回滚）。
+  ///
+  /// [fixedExpression] 是旧接口的单一开关，现已改为从 [data] 推导；
+  /// 保留它只为不破坏老调用点：传 `false` 时强行用 [PortraitFrameMode.real]。
+  PortraitImportWriteResult importFace(
+    PortraitImportResult data,
+    int targetId, {
+    bool? fixedExpression,
+    bool replaceMapFace = true,
+  }) {
+    final mouthMode = fixedExpression == false
+        ? PortraitFrameMode.real
+        : data.mouthMode;
+    if (!writable) {
+      return const PortraitImportWriteResult(PortraitImportOutcome.unsupported,
+          message: '该版本没有可写入的肖像表');
+    }
+    final reader = PortraitReader(_live);
+    final count = reader.entryCount;
+    final table = reader.baseAddress;
+    if (table < 0) {
+      return const PortraitImportWriteResult(
+          PortraitImportOutcome.noTargetEntry,
+          message: '目标 ROM 的肖像表定位不到');
+    }
+    if (targetId < 0 || targetId >= count) {
+      return PortraitImportWriteResult(PortraitImportOutcome.noTargetEntry,
+          message: '目标 ROM 没有第 $targetId 条肖像（共 $count 条）');
+    }
+    // 原条目记录的 eyeX/eyeY 指出了这张脸的五官位置，用它给小头像取景
+    final oldEntry = reader.entryAt(targetId);
+    final originalPalette = reader.paletteBytes(targetId);
+    if (originalPalette != null && originalPalette.length >= 2) {
+      _originalPaletteIndex0 = originalPalette[0] | (originalPalette[1] << 8);
+    }
+    reader.dispose();
+
+    // FE6 的嘴型帧画在正脸 sheet 里（x≥192 四格 + 帧 5 的两半），
+    // 游戏按条目的 mouthX/mouthY 把其中一帧叠到脸上。换脸时不重画这四格，
+    // 游戏就会把**旧角色的嘴**贴到新脸上——这正是「换完脸后嘴部开始花」的真因。
+    var resolved = data;
+    if (replaceMapFace && data.mapFaceIndices != null && oldEntry != null) {
+      final anchor = PortraitMapAnchor.fromEntry(oldEntry);
+      if (anchor.valid) {
+        // 用原条目的眼睛位置重算小头像裁切（主脸数据不变）
+        resolved = PortraitImporter.convertFromIndices(
+          data,
+          anchor: anchor,
+        );
+      }
+    }
+    // FE6 的嘴型帧画在正脸 sheet 里，游戏按条目的 mouthX/mouthY 叠到脸上。
+    // 必须按**这条目标肖像**的坐标重铺，否则游戏会贴旧角色的嘴。
+    // 只在 real 档重铺：fixed 档要的正是「同一块内容」；none 档在 FE6 上
+    // 做不到（没有嘴型指针），退回 fixed 并在下方告知用户。
+    if (_targetIsFe6) {
+      resolved = PortraitImporter.withMouthFrames(
+        resolved,
+        mouthX: oldEntry?.mouthX,
+        mouthY: oldEntry?.mouthY,
+      );
+    }
+    _diag(
+        '导入条目 #$targetId: 素材图=${data.sourceSheet ? '完整素材图(含帧排)' : '普通图片'} '
+        '目标=${_targetIsFe6 ? 'FE6' : 'FE7/8'} 用色=${data.usedColors} '
+        '硬凑=${data.hardMapped} 透明=${(data.transparentRatio * 100).toStringAsFixed(0)}% '
+        '嘴型=${mouthMode.name} 眨眼=${resolved.blinkMode.name} '
+        '嘴帧=${data.mouthIndices != null ? '有' : '无'}（眼帧随正脸 sheet 写入）'
+        'mouthXY=(${oldEntry?.mouthX},${oldEntry?.mouthY}) eyeXY=(${oldEntry?.eyeX},${oldEntry?.eyeY})');
+    final faceBytes = _encodeFace(resolved.faceIndices);
+    final mapBytes = (replaceMapFace && resolved.mapFaceIndices != null)
+        ? _encodeMapFaceIndices(resolved.mapFaceIndices!)
+        : const <int>[];
+    // FE7/FE8 的嘴型是独立 32×96：有数据就写（real / fixed 两档都会带数据），
+    // 没有就置指针 0（＝真正没有嘴型）。眨眼帧在正脸 sheet 右侧，
+    // 已随 faceIndices 一起写入，无需单独处理。
+    final mouthBytes = (!_targetIsFe6 && resolved.mouthIndices != null)
+        ? resolved.mouthIndices!.toList()
+        : const <int>[];
+
+    final need = faceBytes.length +
+        resolved.paletteBytes.length +
+        mapBytes.length +
+        mouthBytes.length +
+        32;
+    final region = _findRegion(need);
+    if (region < 0) {
+      return PortraitImportWriteResult(PortraitImportOutcome.noSpace,
+          message: '目标 ROM 找不到 $need 字节的连续空闲区');
+    }
+
+    var cursor = region;
+    final faceAt = cursor;
+    target.writeBytes(cursor, faceBytes);
+    cursor = _align4(cursor + faceBytes.length);
+
+    var mapAt = 0;
+    if (mapBytes.isNotEmpty) {
+      mapAt = cursor;
+      target.writeBytes(cursor, mapBytes);
+      cursor = _align4(cursor + mapBytes.length);
+    }
+
+    var mouthAt = 0;
+    if (mouthBytes.isNotEmpty) {
+      mouthAt = cursor;
+      target.writeBytes(cursor, mouthBytes);
+      cursor = _align4(cursor + mouthBytes.length);
+    }
+
+    final palAt = cursor;
+    target.writeBytes(palAt,
+        _paletteWithOriginalIndex0(resolved.paletteBytes, resolved.usedColors));
+    cursor += resolved.paletteBytes.length;
+
+    final entrySize = target.rom.table.portraitDataSize;
+    final entryAt = table + targetId * entrySize;
+
+    // 正脸与调色板换成新数据
+    target.writeBytes(entryAt, _ptr(0x08000000 + faceAt));
+    target.writeBytes(entryAt + 8, _ptr(0x08000000 + palAt));
+
+    // 地图小头像：换新数据；没给新头像时保留原指针
+    if (mapAt > 0) {
+      target.writeBytes(entryAt + 4, _ptr(0x08000000 + mapAt));
+    }
+
+    if (_targetIsFe6) {
+      // FE6 条目 16B：+12/+13 是嘴型定位（8 像素格），**保留原值不动**。
+      // 嘴型四帧已在写回前按新脸重画（`withMouthFrames`），所以游戏
+      // 叠上去的就是新脸的嘴部。改这两个字节反而会让引擎去 sheet 外取图。
+      //
+      // 这里也是「FE6 没有嘴型指针」的落点：用户想要「无嘴型」时做不到，
+      // 只能做成「固定」（对齐原版伊冬那种做法），结果里会记下实际生效的档。
+    } else if (mouthAt > 0) {
+      // 有嘴型数据（real 是素材图的真帧，fixed 是同一块重复 6 次）：
+      // 写入嘴型指针，说话时按帧播放。两者与正脸共用同一套调色板，不串色。
+      target.writeBytes(entryAt + 12, _ptr(0x08000000 + mouthAt));
+    } else {
+      // FE7/FE8 条目 28B：+12 嘴型指针置 0 = 没有嘴型帧
+      target.writeBytes(entryAt + 12, const [0, 0, 0, 0]);
+      // 眼睛/嘴型坐标也推回合法小值：指针已空，理论上不会被读；
+      // 但部分改版/引擎分支仍会拿这两个字节算偏移，0xFF 会越界。
+      target.writeBytes(entryAt + 20, const [2, 6, 24, 24]);
+    }
+
+    final bytes = cursor - region;
+    _diag('写入条目 #$targetId: 正脸 ${faceBytes.length}B@0x${faceAt.toRadixString(16)} '
+        '调色板@0x${palAt.toRadixString(16)} '
+        '${mapAt > 0 ? '小头像 ${mapBytes.length}B@0x${mapAt.toRadixString(16)} ' : ''}'
+        '空位@0x${region.toRadixString(16)} 共 ${cursor - region}B');
+    return PortraitImportWriteResult(
+      PortraitImportOutcome.ok,
+      targetId: targetId,
+      entryAddress: entryAt,
+      bytesWritten: bytes,
+      freeSpaceOffset: region,
+      mouthMode: _targetIsFe6
+          // FE6 没有嘴型指针：无论用户选 real/fixed/none，
+          // 实际效果都是「按条目的嘴部坐标贴同一块画面」。
+          ? PortraitFrameMode.fixed
+          : (mouthAt > 0 ? mouthMode : PortraitFrameMode.none),
+      blinkMode: _targetIsFe6 ? PortraitFrameMode.none : resolved.blinkMode,
+    );
+  }
+
+  /// 肖像导入后同步：找出所有 face 字段引用 [portraitId] 的单位，
+  /// 将其 face 值更新为 [newPortraitId] 对应的 face 值。
+  ///
+  /// 用于「写错条目」时的补救：若用户本意是改 #22（琳）却误改了 #1，
+  /// 可调用此方法把所有 face = portraitToFaceId(1) 的单位改为
+  /// face = portraitToFaceId(22)。
+  ///
+  /// 返回更新了 N 个单位；[dryRun=true] 时只报告不写入。
+  PortraitSyncResult syncUnitFaces(int portraitId, int newPortraitId, {bool dryRun = false}) {
+    final rom = target.liveRom;
+    final size = rom.table.unitDataSize;
+    final base = rom.unitBase;
+    if (base < 0 || size <= 0) {
+      return PortraitSyncResult(0, const [], '无法获取单位表基址');
+    }
+    final oldFace = PortraitReader(rom).portraitToFaceId(portraitId);
+    final newFace = PortraitReader(rom).portraitToFaceId(newPortraitId);
+    if (oldFace < 0 || newFace < 0) {
+      return PortraitSyncResult(0, const [], 'portraitId 换算失败');
+    }
+    final changes = <PortraitSyncChange>[];
+    for (var i = 0; i < rom.unitCount; i++) {
+      final addr = base + i * size + UnitOffsets.portraitId;
+      if (addr + 2 > target.buffer.length) continue;
+      final current = target.buffer.u16(addr);
+      if (current != oldFace) continue;
+      final name = rom.unitDisplayName(i).trim();
+      if (!dryRun) {
+        target.writeBytes(addr, [newFace & 0xFF, (newFace >> 8) & 0xFF]);
+      }
+      changes.add(PortraitSyncChange(unitIndex: i, unitName: name, faceBefore: current, faceAfter: newFace));
+    }
+    _diag('syncUnitFaces: $portraitId→$newPortraitId ($oldFace→$newFace)，匹配 ${changes.length} 个单位${dryRun ? '（dry_run）' : ''}');
+    return PortraitSyncResult(changes.length, changes, null);
+  }
+  /// 32×32 小头像索引 → 目标格式字节（FE6 明文 512B；FE7/FE8 LZ77）。
+  List<int> _encodeMapFaceIndices(Uint8List indices) {
+    if (_targetIsFe6) {
+      if (indices.length < 512) {
+        final padded = Uint8List(512)..setRange(0, indices.length, indices);
+        return padded.toList();
+      }
+      return indices.sublist(0, 512).toList();
+    }
+    return Lz77Compressor.compress(indices);
+  }
+
+  static List<int> _ptr(int v) =>
+      [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+
   /// 找一段放得下 [need] 字节的空闲区：优先最长 0xFF 块，其次 0x00 块。
   /// 与文本/地图写回同一策略，起点 4 字节对齐、偏移 < 32MB。
+  int findRegion(int need) => _findRegion(need);
+
+  /// 同 [_findRegion]，公开给「肖像导入」使用（同一套选址策略）。
+  /// 把偏移对齐到 4 字节。
+  ///
+  /// GBA 的调色板是 16 位 BGR555，硬件按 halfword 读取；4bpp 图形同理。
+  /// 写入地址落到奇数时，游戏会把每两个颜色错开一个字节读，
+  /// 整张图变成彩色噪点；而 App 是自己按字节读的，两边不一致，
+  /// 于是出现「App 里正常、游戏里花屏」。
+  static int _align4(int v) => (v + 3) & ~3;
+
   int _findRegion(int need) {
     const limit = 0x02000000;
     final view = HexView(target.buffer);

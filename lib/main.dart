@@ -14,6 +14,7 @@ import 'core/rom_workspace.dart';
 import 'core/feature_flags.dart';
 import 'core/fe_rom.dart';
 import 'core/file_picker_service.dart';
+import 'core/asset_library.dart';
 import 'core/external_workspace.dart';
 import 'core/hex_view.dart';
 import 'core/recipe.dart';
@@ -21,6 +22,7 @@ import 'core/rom_health.dart';
 import 'ui/disasm_page.dart';
 import 'core/patch_format.dart';
 import 'core/patch_apply.dart';
+import 'ui/patch_library_page.dart';
 import 'core/text_browser.dart';
 import 'core/text_codec.dart';
 import 'core/text_writer.dart';
@@ -37,11 +39,13 @@ import 'ui/log_page.dart';
 import 'ui/chapter_page.dart';
 import 'ui/portrait_page.dart';
 import 'ui/portrait_port_page.dart';
+import 'ui/portrait_import_page.dart';
 import 'ui/health_page.dart';
 import 'ui/rom_session_bar.dart';
 import 'ui/table_address_page.dart';
 import 'ui/unit_page.dart';
 import 'ui/workspace_page.dart';
+import 'ui/asset_library_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,6 +54,8 @@ Future<void> main() async {
   await AppSettings.instance.load();
   // 外部工作区：目录授权跟着系统持久化，这里只把「上次选的目录」读回来
   await ExternalWorkspace.instance.load();
+  // 素材库同理（独立目录，存导出的肖像/动画帧）
+  await AssetLibrary.instance.load();
   AppLog.instance.attachFile();
   runApp(const FeEditorApp());
 }
@@ -148,6 +154,9 @@ class _HomePageState extends State<HomePage> {
     _workspace.addListener(_onWorkspace);
     // MCP 请求随时可能到达（包括 App 在后台时），所以工作区一建好就绑定。
     McpService.instance.install(_workspace);
+    // 上次开着 MCP（尤其是局域网模式）的话，重启后自动回到同一状态，
+    // 电脑端配好的地址 + 口令不用重填。后台跑，不阻塞首帧。
+    McpService.instance.restoreFromSettings();
   }
 
   @override
@@ -477,6 +486,14 @@ class _HomePageState extends State<HomePage> {
               ),
             );
           }),
+          _tile('肖像编辑器', Icons.add_photo_alternate,
+              '把外部图片转成游戏里的肖像（自动量化 16 色）', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => PortraitImportPage(edit: edit)),
+            ).then((_) => setState(() {}));
+          }),
           _tile('文本', Icons.article, 'ROM 内全部对话与字符串（含中文）', () {
             Navigator.push(
               context,
@@ -548,6 +565,20 @@ class _HomePageState extends State<HomePage> {
               MaterialPageRoute(builder: (_) => TableAddressPage(edit: edit)),
             );
             if (changed == true && mounted) setState(() {});
+          }),
+          _tile('补丁库', Icons.extension, 'FEBuilderGBA 社区补丁，一键安装', () async {
+            final changed = await Navigator.push<bool>(
+              context,
+              MaterialPageRoute(builder: (_) => PatchListPage(edit: edit)),
+            );
+            if (changed == true && mounted) setState(() {});
+          }),
+          _tile('素材库', Icons.photo_library_outlined,
+              '存素材，也能把库里的 PNG 直接写成游戏肖像', () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => AssetLibraryPage(edit: edit)),
+            );
           }),
           _tile('设置', Icons.settings, '覆盖模式等保存选项', () {
             Navigator.push(

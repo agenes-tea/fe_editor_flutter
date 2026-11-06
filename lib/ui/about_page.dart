@@ -24,6 +24,9 @@ class AboutPage extends StatelessWidget {
           const SizedBox(height: 8),
           _feedbackCard(context),
           const SizedBox(height: 16),
+          _sectionHeader(context, '支持本项目'),
+          _sponsorCard(context),
+          const SizedBox(height: 16),
           _sectionHeader(context, '关于本工具'),
           _introCard(context),
           const SizedBox(height: 16),
@@ -143,6 +146,82 @@ class AboutPage extends StatelessWidget {
 
   Future<void> _openFeedback(BuildContext context) =>
       _openLink(context, feedbackUrl);
+
+  /// 赞助卡片：写明免费开源、为何需要赞助、跳转外部浏览器、完全自愿。
+  Widget _sponsorCard(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.favorite_outline, size: 18, color: scheme.primary),
+                const SizedBox(width: 8),
+                const Text(
+                  '如果觉得有帮助，欢迎小额赞助',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            const _Para(
+              '本工具完全免费开源，无广告，所有功能无需付费解锁。',
+            ),
+            const SizedBox(height: 8),
+            const _Para(
+              '后续版本主要由 AI 协助维护迭代，会产生模型与算力相关开销。'
+              '如果您觉得工具对您有帮助，欢迎小额赞助以平衡维护成本。',
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => _confirmSponsor(context),
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('前往爱发电'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '⚠️ 点击将跳转外部浏览器（爱发电），赞助完全自愿，不影响任何功能使用。',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.5,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 跳外部浏览器前先确认一次——用户在应用里点的按钮，
+  /// 突然把应用切到浏览器容易让人以为是误触。
+  Future<void> _confirmSponsor(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('将跳转到外部浏览器'),
+        content: const Text(
+          '即将打开爱发电页面（需要联网）。\n\n'
+          '赞助完全自愿，不影响任何功能的使用——不赞助也能用全部功能。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('继续'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    await _openLink(context, sponsorUrl);
+  }
 
   Future<void> _openLink(BuildContext context, String url) async {
     final ok = await openUrl(url);

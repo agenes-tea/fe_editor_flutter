@@ -6,7 +6,9 @@ import 'package:fe_editor/core/dialog_script.dart';
 import 'package:fe_editor/core/rom_session.dart';
 import 'package:fe_editor/core/text_writer.dart';
 
-const _dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const _dir = romDir;
 const _gbk = '火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';
 const _fe8jp =
     '1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';

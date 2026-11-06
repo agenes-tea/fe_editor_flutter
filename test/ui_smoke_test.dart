@@ -11,7 +11,9 @@ import 'package:fe_editor/ui/add_reinforcement_dialog.dart';
 import 'package:fe_editor/core/chapter_events.dart';
 import 'package:fe_editor/core/unit_placement.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 
 const fe7jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe8jp = '$dir/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
@@ -119,7 +121,7 @@ void main() {
     expect(find.textContaining('Lv'), findsWidgets);
   });
 
-  testWidgets('章节页：事件动态单位并入列表（只读、标事件）', (tester) async {
+  testWidgets('章节页：事件动态单位并入列表（可编辑、标事件）', (tester) async {
     // 列表区默认只有一百多像素高，ListView 只构建可见行；测试里拉高画布
     // 才能数清全部行。
     await tester.binding.setSurfaceSize(const Size(420, 1600));
@@ -130,13 +132,15 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     // 烈火第 0 章：静态只有琳 1 人（带编辑笔），事件增援 3 人里
-    // 琳(14,9) 与静态重复被跳过 → 列表 3 行、2 个「事件」徽标、1 个可编辑。
+    // 琳(14,9) 与静态重复被跳过 → 列表 3 行、2 个「事件」徽标、1 个静态可编辑行。
     expect(find.byIcon(Icons.edit), findsOneWidget);
     expect(find.text('事件'), findsNWidgets(2));
+    // 事件行也是可编辑的（改道具/等级/坐标），用不同图标与静态行区分
+    expect(find.byIcon(Icons.edit_note), findsNWidgets(2));
     // 营地山贼的坐标来自事件脚本
     expect(find.textContaining('(3, 2)'), findsOneWidget);
     expect(find.textContaining('敌方'), findsWidgets);
-    // 动态行不弹编辑页（无可点入口）：点它不应报错
+    // 点「事件」徽标本体不跳页（徽标不是按钮）
     await tester.tap(find.text('事件').first);
     await tester.pump(const Duration(milliseconds: 200));
     expect(find.textContaining('第 0 章'), findsOneWidget);
@@ -156,10 +160,11 @@ void main() {
     expect(find.text('事件'), findsWidgets);
     expect(find.textContaining('敌方'), findsWidgets);
 
-    // 红方：静态为空，全是事件加载的
+    // 红方：静态为空，全是事件加载的（列表全是事件行，静态编辑笔一个都没有）
     await tester.tap(find.text('红方（敌军）'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byIcon(Icons.edit), findsNothing);
+    expect(find.byIcon(Icons.edit_note), findsWidgets);
     expect(find.text('事件'), findsWidgets);
   });
 
@@ -174,11 +179,13 @@ void main() {
     // 我方（普通）：静态 2 人 + 事件 3 人（全是敌方）
     expect(find.byIcon(Icons.edit), findsNWidgets(2));
     expect(find.text('事件'), findsNWidgets(3));
+    expect(find.byIcon(Icons.edit_note), findsNWidgets(3));
 
     // 遭遇战槽是「遭遇战配置」，不并事件单位
     await tester.tap(find.text('遭遇我方 1'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('事件'), findsNothing);
+    expect(find.byIcon(Icons.edit_note), findsNothing);
   });
 
   testWidgets('体检页：原版 ROM 显示结构正常', (tester) async {

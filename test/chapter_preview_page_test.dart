@@ -6,7 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/rom_session.dart';
 import 'package:fe_editor/ui/chapter_preview_page.dart';
 
-const _dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const _dir = romDir;
 const _gbk = '火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';
 
 /// 同步打开 ROM 会话（widget 测试里不能 await 同步构造，见 AGENTS 的 FakeAsync 坑）。

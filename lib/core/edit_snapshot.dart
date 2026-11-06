@@ -76,6 +76,8 @@ class SnapshotStore {
       // 不该发生（edits 只追加）；出现说明状态被意外清空，只能整体丢弃
       rom.edits.clear();
     }
+    // 图像缓存靠内容版本号判定过期，直接改字节不会自动触发。
+    rom.touchContent();
     return true;
   }
 

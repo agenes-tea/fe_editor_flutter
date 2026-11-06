@@ -7,12 +7,14 @@ import 'package:fe_editor/core/editable_rom.dart';
 import 'package:fe_editor/core/rom_info.dart';
 import 'package:fe_editor/core/rom_session.dart';
 
+import 'rom_paths.dart';
+
 /// 模拟器核心层测试：公式、逐级曲线、改前快照（overOriginal）。
 ///
 /// 公式取自 GBA 火纹战斗结算（BattleCalculate）——近似值，
 /// 不计地形、支援、三角武器与特効。这里用独立重算的公式值核对
 /// [BattleSimulator] 的读表接线（偏移、职业回退、武器字段）。
-const dir = '/root/workspace/game-rom';
+const dir = romDir;
 const fe7jp =
     '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe8jp =

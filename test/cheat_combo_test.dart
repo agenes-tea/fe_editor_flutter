@@ -8,10 +8,12 @@ import 'package:fe_editor/core/item_catalog.dart';
 import 'package:fe_editor/core/playable_units.dart';
 import 'package:fe_editor/core/rom_session.dart';
 
+import 'rom_paths.dart';
+
 /// 组合预设（CheatPreset.combo）测试：
 /// 「单角色全套强化」= 成长率拉满 + 熟练度 S + 职业上限 50 + 三倍经验，
 /// 用自定义名单勾一个角色时，角色字段只改那一个、职业表改全表。
-const dir = '/root/workspace/game-rom';
+const dir = romDir;
 const fe7jp =
     '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 

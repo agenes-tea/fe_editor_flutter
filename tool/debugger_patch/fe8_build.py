@@ -11,7 +11,7 @@ import re, glob, os, sys, hashlib
 from build import BE, GBA_BASE
 from huff import Tree, u16, u32, build_tree, serialize
 
-ROMDIR = '/root/workspace/game-rom'
+ROMDIR = os.environ.get('FE_ROM_DIR', '../game-rom')
 SYSYM = '/tmp/csk.sym'
 DBG = '/tmp/vesly_asm/Debugger'
 

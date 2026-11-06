@@ -7,7 +7,9 @@ import 'package:fe_editor/core/editable_rom.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/text_writer.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe8jp =
     '$dir/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
 const superxyj = '$dir/火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';

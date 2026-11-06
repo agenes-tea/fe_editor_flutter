@@ -25,8 +25,9 @@ class MainActivity : FlutterActivity() {
     /// 有了它，Dart 侧就不必每次手动选 ROM。
     private var workspaceUri: Uri? = null
 
-    /// 内嵌 MCP 服务器（独立线程监听 127.0.0.1）。
-    private var mcp: McpServer? = null
+    /// 素材库目录（肖像/战斗动画/图标等导出的 PNG 放这里）。
+    /// 与工作区分开：工作区只装 ROM，素材不想跟 ROM 混在一个授权里。
+    private var assetDirUri: Uri? = null
 
     /// 供 MCP 桥接用（McpServer 拿不到 flutterEngine 这个 protected 成员）。
     private var mcpMessenger: io.flutter.plugin.common.BinaryMessenger? = null
@@ -36,6 +37,7 @@ class MainActivity : FlutterActivity() {
         mcpMessenger = flutterEngine.dartExecutor.binaryMessenger
         // 恢复上次选定的工作区目录：重启后不必再选一次
         workspaceUri = readWorkspaceUri()
+        assetDirUri = readAssetDirUri()
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -92,6 +94,21 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
                         try {
+                            // 从工作区打开的 ROM 也要能被「覆盖模式」写回：
+                            // 否则用户改完点导出，永远报「没有可覆盖的源文件」。
+                            // 工作区目录是持久授权的，所以直接记下具体文件的 URI 即可。
+                            findRomByName(name)?.let { uri ->
+                                sourceUri = uri
+                                try {
+                                    contentResolver.takePersistableUriPermission(
+                                        uri,
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                    )
+                                } catch (_: SecurityException) {
+                                    // 树授权通常已含子文件权限，失败不影响写回
+                                }
+                            }
                             result.success(readWorkspaceRom(name))
                         } catch (e: Exception) {
                             result.error("READ_FAILED", friendlyIoError(e), null)
@@ -108,6 +125,144 @@ class MainActivity : FlutterActivity() {
                             result.success(writeWorkspaceRom(name, bytes))
                         } catch (e: Exception) {
                             result.error("WRITE_FAILED", friendlyIoError(e), null)
+                        }
+                    }
+                    "pickAssetDir" -> {
+                        if (pendingResult != null) {
+                            result.error("BUSY", "已有选择框在等待", null)
+                            return@setMethodCallHandler
+                        }
+                        pendingResult = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                        }
+                        startActivityForResult(intent, REQ_PICK_ASSET_DIR)
+                    }
+                    "assetDir" -> {
+                        try {
+                            result.success(describeAssetDir())
+                        } catch (e: Exception) {
+                            result.success(null)
+                        }
+                    }
+                    "clearAssetDir" -> {
+                        val old = assetDirUri
+                        assetDirUri = null
+                        writeAssetDirUri(null)
+                        if (old != null) {
+                            try {
+                                contentResolver.releasePersistableUriPermission(
+                                    old,
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                )
+                            } catch (_: Exception) {
+                                // 提供方不支持回收，忽略
+                            }
+                        }
+                        result.success(true)
+                    }
+                    "listAssets" -> {
+                        try {
+                            result.success(listAssets())
+                        } catch (e: Exception) {
+                            result.error("LIST_FAILED", friendlyIoError(e), null)
+                        }
+                    }
+                    "readAsset" -> {
+                        val name = call.argument<String>("name")
+                        if (name == null || name.isEmpty()) {
+                            result.error("BAD_ARGS", "缺少文件名", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            result.success(readAsset(name))
+                        } catch (e: Exception) {
+                            result.error("READ_FAILED", friendlyIoError(e), null)
+                        }
+                    }
+                    "writeAsset" -> {
+                        val name = call.argument<String>("name")
+                        val bytes = call.argument<ByteArray>("bytes")
+                        if (name == null || bytes == null) {
+                            result.error("BAD_ARGS", "缺少文件名或内容", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            result.success(writeAsset(name, bytes))
+                        } catch (e: Exception) {
+                            result.error("WRITE_FAILED", friendlyIoError(e), null)
+                        }
+                    }
+                    "listAssetStore" -> {
+                        val dir = call.argument<String>("dir")
+                        if (dir == null || dir.isEmpty()) {
+                            result.error("BAD_ARGS", "缺少目录", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(assetStoreFiles(dir))
+                    }
+                    "readAssetStore" -> {
+                        val dir = call.argument<String>("dir")
+                        val name = call.argument<String>("name")
+                        if (dir == null || name == null) {
+                            result.error("BAD_ARGS", "缺少目录或文件名", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            result.success(readAssetStore(dir, name))
+                        } catch (e: Exception) {
+                            result.error("READ_FAILED", friendlyIoError(e), null)
+                        }
+                    }
+                    "writeAssetStore" -> {
+                        val dir = call.argument<String>("dir")
+                        val name = call.argument<String>("name")
+                        val bytes = call.argument<ByteArray>("bytes")
+                        if (dir == null || name == null || bytes == null) {
+                            result.error("BAD_ARGS", "缺少目录、文件名或内容", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            result.success(writeAssetStore(dir, name, bytes))
+                        } catch (e: Exception) {
+                            result.error("WRITE_FAILED", friendlyIoError(e), null)
+                        }
+                    }
+                    "deleteAssetStore" -> {
+                        val dir = call.argument<String>("dir")
+                        val name = call.argument<String>("name")
+                        if (dir == null || name == null) {
+                            result.error("BAD_ARGS", "缺少目录或文件名", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(deleteAssetStore(dir, name))
+                    }
+                    "importAssetFromLibrary" -> {
+                        // 素材库（SAF）里的文件 → AssetStore（App 私有目录）。
+                        // **字节全程在原生侧走**：不经过 Dart、不进 AI 上下文，
+                        // 所以 1MB 的图也能一步入库（这就是 handle 通道的核心收益）。
+                        val name = call.argument<String>("name")
+                        val dir = call.argument<String>("dir")
+                        if (name == null || name.isEmpty() || dir == null || dir.isEmpty()) {
+                            result.error("BAD_ARGS", "缺少素材名或目标目录", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val bytes = readAsset(name)
+                            val handle = crcHandle(bytes)
+                            writeAssetStore(dir, "$handle.bin", bytes)
+                            result.success(
+                                mapOf(
+                                    "handle" to handle,
+                                    "size" to bytes.size,
+                                    "source_name" to name,
+                                )
+                            )
+                        } catch (e: Exception) {
+                            result.error("IMPORT_FAILED", friendlyIoError(e), null)
                         }
                     }
                     "pickRom" -> {
@@ -161,10 +316,28 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
                         try {
-                            contentResolver.openOutputStream(uri, "wt")?.use { out ->
-                                out.write(bytes)
-                            } ?: throw IllegalStateException("无法写入所选文件")
-                            result.success(uri.toString())
+                            // 不同 provider 支持的模式不同：文档树认 "wt"，
+                            // 媒体库（content://media/...）在部分设备上只认 "rwt"。
+                            // 实测「downloads 下的文件」用 "wt" 会抛 FileNotFoundException，
+                            // 所以失败后换模式再试一次，都失败才真报错。
+                            var lastError: Exception? = null
+                            for (mode in listOf("wt", "rwt")) {
+                                try {
+                                    val out = contentResolver.openOutputStream(uri, mode)
+                                    if (out == null) {
+                                        lastError = IllegalStateException(
+                                            "无法打开写入流（mode=$mode）"
+                                        )
+                                        continue
+                                    }
+                                    out.use { it.write(bytes) }
+                                    result.success(uri.toString())
+                                    return@setMethodCallHandler
+                                } catch (e: Exception) {
+                                    lastError = e
+                                }
+                            }
+                            throw lastError ?: IllegalStateException("无法写入")
                         } catch (e: Exception) {
                             result.error("WRITE_FAILED", e.message, null)
                         }
@@ -216,11 +389,12 @@ class MainActivity : FlutterActivity() {
                             val allowLan = call.argument<Boolean>("allowLan") ?: false
                             val token = call.argument<String>("token") ?: ""
                             if (allowLan && token.isEmpty()) {
-                                throw IllegalStateException("局域网模式必须设置访问口令")
+                                // 不强制局域网口令：风险由界面弹框确认。
+                                // 保留这行只是为了知会日志，不阻止启动。
                             }
                             val messenger = mcpMessenger
                                 ?: throw IllegalStateException("引擎尚未就绪")
-                            val server = mcp ?: McpServer(this, messenger).also { mcp = it }
+                            val server = mcpInstance ?: McpServer(this, messenger).also { mcpInstance = it }
                             val actual = server.start(preferred, allowLan, token)
                             result.success(actual)
                         } catch (e: Exception) {
@@ -228,14 +402,14 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "mcpStop" -> {
-                        mcp?.stop()
+                        mcpInstance?.stop()
                         result.success(true)
                     }
                     "mcpStatus" -> {
                         result.success(mapOf(
-                            "running" to (mcp?.running ?: false),
-                            "port" to (mcp?.port ?: 0),
-                            "needsToken" to ((mcp?.token?.isNotEmpty()) ?: false)
+                            "running" to (mcpInstance?.running ?: false),
+                            "port" to (mcpInstance?.port ?: 0),
+                            "needsToken" to ((mcpInstance?.token?.isNotEmpty()) ?: false)
                         ))
                     }
                     "pickJson" -> {
@@ -282,6 +456,21 @@ class MainActivity : FlutterActivity() {
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         startActivityForResult(intent, REQ_PICK_PATCH)
+                    }
+                    "pickImage" -> {
+                        // 肖像导入：选一张 PNG/JPG，读进缓存文件后交给 Dart 解码。
+                        // 与 pickPatch 同一套流程（不记 sourceUri——图片不是 ROM）。
+                        if (pendingResult != null) {
+                            result.error("BUSY", "已有选择框在等待", null)
+                            return@setMethodCallHandler
+                        }
+                        pendingResult = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "image/*"
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivityForResult(intent, REQ_PICK_IMAGE)
                     }
                     "shareGbaRom" -> {
                         // 「用模拟器打开」：改后的 ROM 先落缓存，包成 content URI
@@ -344,7 +533,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        mcp?.stop()
+        mcpInstance?.stop()
         super.onDestroy()
     }
 
@@ -444,6 +633,20 @@ class MainActivity : FlutterActivity() {
                     result.error("READ_FAILED", e.message, null)
                 }
             }
+            REQ_PICK_IMAGE -> {
+                val result = pendingResult ?: return
+                pendingResult = null
+                val uri = data?.data
+                if (resultCode != Activity.RESULT_OK || uri == null) {
+                    result.success(null)
+                    return
+                }
+                try {
+                    result.success(copyToCache(uri))
+                } catch (e: Exception) {
+                    result.error("READ_FAILED", e.message, null)
+                }
+            }
             REQ_PICK_DIR -> {
                 val result = pendingResult ?: return
                 pendingResult = null
@@ -478,6 +681,36 @@ class MainActivity : FlutterActivity() {
                     describeWorkspace()
                 } catch (e: Exception) {
                     mapOf("uri" to uri.toString(), "name" to "工作区", "path" to uri.path.orEmpty())
+                }
+                result.success(info)
+            }
+            REQ_PICK_ASSET_DIR -> {
+                val result = pendingResult ?: return
+                pendingResult = null
+                val uri = data?.data
+                if (resultCode != Activity.RESULT_OK || uri == null) {
+                    result.success(null)
+                    return
+                }
+                val takeFlags = data.flags and
+                        (Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                try {
+                    contentResolver.takePersistableUriPermission(uri, takeFlags)
+                } catch (e: Exception) {
+                    result.error(
+                        "NO_PERSIST",
+                        "这个目录不支持长期授权，换一个目录（如「文档」或 SD 卡根目录）再试",
+                        null
+                    )
+                    return
+                }
+                assetDirUri = uri
+                writeAssetDirUri(uri)
+                val info = try {
+                    describeAssetDir()
+                } catch (e: Exception) {
+                    mapOf("uri" to uri.toString(), "name" to "素材库", "path" to uri.path.orEmpty())
                 }
                 result.success(info)
             }
@@ -675,6 +908,228 @@ class MainActivity : FlutterActivity() {
         return null
     }
 
+    // ---------- 素材库 ----------
+
+    /** 素材库目录的显示信息；未选或授权已失效时返回 null。 */
+    private fun describeAssetDir(): Map<String, Any>? {
+        val uri = assetDirUri ?: return null
+        if (!hasPersistedPermission(uri)) {
+            assetDirUri = null
+            writeAssetDirUri(null)
+            return null
+        }
+        return try {
+            mapOf(
+                "uri" to uri.toString(),
+                "name" to (displayName(uri) ?: "素材库"),
+                "path" to uri.path.orEmpty()
+            )
+        } catch (e: Exception) {
+            assetDirUri = null
+            writeAssetDirUri(null)
+            null
+        }
+    }
+
+    /** 列出素材库里的文件（PNG/BIN/JSON 等，按文件名排序）。 */
+    private fun listAssets(): List<Map<String, Any>> {
+        val root = assetDirUri ?: return emptyList()
+        if (!hasPersistedPermission(root)) {
+            assetDirUri = null
+            writeAssetDirUri(null)
+            return emptyList()
+        }
+        val out = mutableListOf<Map<String, Any>>()
+        queryChildren(root) { name, docId, size, modified ->
+            out.add(
+                mapOf(
+                    "name" to name,
+                    "docId" to (docId ?: ""),
+                    "size" to size,
+                    "modified" to modified,
+                )
+            )
+        }
+        out.sortBy { it["name"] as String }
+        return out
+    }
+
+    private fun readAsset(name: String): ByteArray {
+        val uri = findChildByName(assetDirUri, name)
+            ?: throw IllegalStateException("素材库里找不到「$name」")
+        return contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IllegalStateException("无法读取「$name」")
+    }
+
+    /**
+     * 写一个素材到素材库。
+     *
+     * 同名就原地覆盖（不建副本）：导出肖像时反复调同一名字，
+     * 每次都攒一份 `foo (1).png`、`foo (2).png` 反而不像素材库。
+     */
+    private fun writeAsset(name: String, bytes: ByteArray): Boolean {
+        val root = assetDirUri ?: throw IllegalStateException("还没选素材库目录")
+        if (!hasPersistedPermission(root)) {
+            assetDirUri = null
+            writeAssetDirUri(null)
+            throw SecurityException("素材库授权已失效，请重新选择目录")
+        }
+        val existing = findChildByName(root, name)
+        if (existing != null) {
+            contentResolver.openOutputStream(existing, "wt")?.use { it.write(bytes) }
+                ?: throw IllegalStateException("无法写入「$name」")
+            return true
+        }
+        val docId = android.provider.DocumentsContract.getTreeDocumentId(root)
+        val parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(root, docId)
+        val target = android.provider.DocumentsContract.createDocument(
+            contentResolver, parent, mimeTypeOf(name), name
+        ) ?: throw IllegalStateException("无法在素材库里新建「$name」")
+        contentResolver.openOutputStream(target, "wt")?.use { it.write(bytes) }
+            ?: throw IllegalStateException("无法写入「$name」")
+        return true
+    }
+
+    // ---------- AssetStore（App 私有目录，无需存储权限） ----------
+
+    /**
+     * 解析素材仓库目录：`filesDir/<dir>`。
+     *
+     * `dir` 由 Dart 侧给出（形如 `assets/<项目指纹>`），这里只允许相对路径，
+     * 拒绝 `..` 与绝对路径，避免被传入任意路径。
+     */
+    private fun resolveAssetStoreDir(dir: String): File {
+        val clean = dir.trim().trimStart('/')
+        if (clean.isEmpty() || clean.contains("..")) {
+            throw IllegalArgumentException("非法目录：$dir")
+        }
+        val root = File(filesDir, "assets").canonicalFile
+        val target = File(filesDir, clean).canonicalFile
+        if (!target.path.startsWith(root.path + File.separator)) {
+            throw IllegalArgumentException("目录越界：$dir")
+        }
+        target.mkdirs()
+        return target
+    }
+
+    private fun assetStoreFiles(dir: String): List<String> {
+        val d = resolveAssetStoreDir(dir)
+        return (d.listFiles() ?: emptyArray())
+            .filter { it.isFile }
+            .map { it.name }
+            .sorted()
+    }
+
+    private fun readAssetStore(dir: String, name: String): ByteArray? {
+        val safe = name.substringAfterLast('/').substringAfterLast('\\')
+        val f = File(resolveAssetStoreDir(dir), safe)
+        // 不存在返回 null，不是抛异常：元数据索引 _meta.json 首次访问时必然不存在，
+        // 抛异常会让「空素材库」变成一次工具调用失败。
+        return if (f.exists()) f.readBytes() else null
+    }
+
+    private fun writeAssetStore(dir: String, name: String, bytes: ByteArray): Boolean {
+        val safe = name.substringAfterLast('/').substringAfterLast('\\')
+        val f = File(resolveAssetStoreDir(dir), safe)
+        FileOutputStream(f).use { it.write(bytes) }
+        return true
+    }
+
+    private fun deleteAssetStore(dir: String, name: String): Boolean {
+        val safe = name.substringAfterLast('/').substringAfterLast('\\')
+        val f = File(resolveAssetStoreDir(dir), safe)
+        return !f.exists() || f.delete()
+    }
+
+    /**
+     * 与 Dart 侧 `AssetStore.handleOf` **位对位一致**的内容哈希。
+     *
+     * 两边都会到同一个 handle 是必须的：原生先存好文件，Dart 侧再按 handle
+     * 写元数据；算法不一致就会变成两份孤儿文件。
+     */
+    private fun crcHandle(bytes: ByteArray): String {
+        val c = java.util.zip.CRC32().apply { update(bytes) }.value
+        val head = if (bytes.size >= 16) bytes.copyOfRange(0, 8) else bytes
+        val tail = if (bytes.size >= 16) bytes.copyOfRange(bytes.size - 8, bytes.size) else ByteArray(0)
+        val len = bytes.size
+        val sample = head + tail + byteArrayOf(
+            (len and 0xFF).toByte(),
+            ((len shr 8) and 0xFF).toByte(),
+            ((len shr 16) and 0xFF).toByte(),
+        )
+        val c2 = java.util.zip.CRC32().apply { update(sample) }.value
+        return java.lang.String.format("%08x%08x", c, c2)
+    }
+
+    private fun mimeTypeOf(name: String): String {
+        val lower = name.lowercase()
+        return when {
+            lower.endsWith(".png") -> "image/png"
+            lower.endsWith(".json") -> "application/json"
+            lower.endsWith(".txt") -> "text/plain"
+            else -> "application/octet-stream"
+        }
+    }
+
+    /** 遍历某目录下的条目，回调 (显示名, docId, 大小, 最后修改)。 */
+    private inline fun queryChildren(
+        root: Uri,
+        onRow: (String, String?, Long, Long) -> Unit
+    ) {
+        val docId = android.provider.DocumentsContract.getTreeDocumentId(root)
+        val children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(
+            root, docId
+        )
+        val projection = arrayOf(
+            android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            android.provider.DocumentsContract.Document.COLUMN_SIZE,
+            android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        )
+        contentResolver.query(children, projection, null, null, null)?.use { c ->
+            while (c.moveToNext()) {
+                val name = c.getString(1) ?: continue
+                onRow(name, c.getString(0), c.getLong(2), c.getLong(3))
+            }
+        }
+    }
+
+    /** 在某目录里按显示名找子文档。 */
+    private fun findChildByName(root: Uri?, name: String): Uri? {
+        if (root == null) return null
+        var found: Uri? = null
+        queryChildren(root) { childName, docId, _, _ ->
+            if (found == null && childName == name && docId != null) {
+                found = android.provider.DocumentsContract.buildDocumentUriUsingTree(
+                    root, docId
+                )
+            }
+        }
+        return found
+    }
+
+    private fun assetSettingsFile() = File(filesDir, "assetdir")
+
+    private fun readAssetDirUri(): Uri? {
+        return try {
+            val f = assetSettingsFile()
+            if (!f.exists()) return null
+            val text = f.readText().trim()
+            if (text.isEmpty()) null else Uri.parse(text)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun writeAssetDirUri(uri: Uri?) {
+        try {
+            val f = assetSettingsFile()
+            if (uri == null) f.delete() else f.writeText(uri.toString())
+        } catch (_: Exception) {
+            // 保存失败只影响下次是否要重选
+        }
+    }
+
     private fun isRomFileName(name: String): Boolean {
         val lower = name.lowercase()
         return lower.endsWith(".gba") || lower.endsWith(".agb") || lower.endsWith(".bin")
@@ -704,11 +1159,18 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        /// 进程级 MCP 单例：Activity 因配置变化重建时 `mcpInstance` 仍指向原实例，
+        /// 不再 new 第二个——否则每次重建都多一个监听 socket，端口越堆越多（实测
+        /// 8422/8423/8424 同时监听、健康检查 running 却为 false）。
+        @Volatile private var mcpInstance: McpServer? = null
+
         private const val REQ_PICK = 4201
         private const val REQ_SAVE = 4202
         private const val REQ_PICK_JSON = 4203
         private const val REQ_PICK_DIR = 4204
         private const val REQ_PICK_TEXT = 4205
         private const val REQ_PICK_PATCH = 4206
+        private const val REQ_PICK_ASSET_DIR = 4207
+        private const val REQ_PICK_IMAGE = 4208
     }
 }

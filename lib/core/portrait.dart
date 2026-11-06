@@ -106,8 +106,25 @@ class PortraitReader {
   int? _count;
 
   /// 正脸 sheet 缓存（按条目 id），避免滑动时反复解压。
+  ///
+  /// **必须随内容版本号失效**：写入后表里的指针变了，但 id 没变，
+  /// 只按 id 缓存就会一直端出换脸前的图（实测：导入一张脸后撤销全部，
+  /// 界面仍是导入的那张）。
   final _sheetCache = <int, TileImage>{};
   static const int _sheetCacheLimit = 24;
+
+  /// 缓存建立时的内容版本号；与 [rom.contentVersion] 不一致时整体丢弃。
+  int _cacheVersion = -1;
+
+  /// 与当前内容版本号对齐：数据被改过就丢掉全部派生数据（sheet 与表规模）。
+  void _syncVersion() {
+    if (_cacheVersion == rom.contentVersion) return;
+    _cacheVersion = rom.contentVersion;
+    _sheetCache.clear();
+    _count = null;
+    _base = null;
+    _probeCache = null;
+  }
 
   PortraitReader(this.rom);
 
@@ -131,6 +148,7 @@ class PortraitReader {
   /// 关键：**不能因为 ID 0 看起来「无效」就跳过它**——那会让所有 ID 后移一位，
   /// 名字与图像就对不上了。
   int get _slotBase {
+    _syncVersion();
     final cached = _base;
     if (cached != null) return cached;
     final override = rom.tableBaseOverrides['portrait'];
@@ -157,6 +175,7 @@ class PortraitReader {
 
   /// 表内条目数。判停规则同 FEBuilderGBA：连续 NULL 条目达到阈值即停。
   int get entryCount {
+    _syncVersion();
     final cached = _count;
     if (cached != null) return cached;
     if (!available) {
@@ -214,6 +233,10 @@ class PortraitReader {
   }
 
   PortraitEntry? entryAt(int id) {
+    _syncVersion();
+    // 先卡表边界：只查「读得进 ROM」会让超界的 id 落在表后面的
+    // 其它数据上，解出一张看起来像样的垃圾图（实测 id=9999 能出图）。
+    if (id < 0 || id >= entryCount) return null;
     final at = _entryAddress(id);
     if (at < 0) return null;
     final unitFace = FeRom.toOffset(_u32(at));
@@ -265,6 +288,7 @@ class PortraitReader {
 
   /// 取条目的完整 sheet（含缓存）。FE6 恒为 LZ77。
   TileImage? sheet(PortraitEntry e) {
+    _syncVersion();
     final cached = _sheetCache[e.id];
     if (cached != null) return cached;
     final pal = _palette(e.palette);
@@ -356,9 +380,13 @@ class PortraitReader {
     final mouth = e.mouth;
     if (!_valid(mouth)) return null;
     final m = decode4bpp(rom.data, mouth, pw, ph * 6, pal);
-    if (frame < 0 || frame > 5) return null;
+    // [frame] 是**外部 1 基帧号**（1..6，与界面、FE6 分支一致）。
+    // 内部 y 偏移必须减 1：以前这里直接用 `ph * frame`，既不接受 6
+    // （`frame > 5` 直接返回 null，于是第 6 帧永远看不到），
+    // 又让每一帧都偏离实际位置一帧（帧 1 读到的其实是第 2 帧）。
+    if (frame < 1 || frame > 6) return null;
     final out = TileImage(pw, ph);
-    TileImage.blit(out, 0, 0, pw, ph, m, 0, ph * frame);
+    TileImage.blit(out, 0, 0, pw, ph, m, 0, ph * (frame - 1));
     return out;
   }
 
@@ -402,6 +430,219 @@ class PortraitReader {
     if (uz == null || uz.isEmpty) return null;
     return decode4bpp(uz, 0, 10 * 8, 10 * 8, pal);
   }
+
+  /// 完整素材图（256×40 或 FE6 的 256×34），即游戏内部 sheet 本身。
+  ///
+  /// **这是内部存储格式，不是 FEBuilderGBA 的可再导入素材图**：
+  /// 六块脸/肩散放在 sheet 各处的原始位置，人眼看着是碎片。
+  /// 想导出能再导回的图用 [sheetMaterialImage]。
+  TileImage? fullSheetImage(int id) {
+    final e = entryAt(id);
+    if (e == null) return null;
+    final pal = _palette(e.palette);
+    if (pal == null) return null;
+    final src = sheet(e);
+    if (src == null) return null;
+    // sheet 已经是 256×sheetHeight 的 4bpp TileImage，直接返回即可
+    return src;
+  }
+
+  /// FEBuilderGBA 布局的完整素材图（128×112），可直接导回去。
+  ///
+  /// 布局与 `ImagePortraitForm.DrawPortraitSeet` / `DrawPortraitSeetFE6`
+  /// 逐项对应（GPL-3.0，7743 著），也与本文件 `PortraitSheetLayout` 的
+  /// 分区提取互为逆变换：
+  ///
+  /// ```
+  /// (0,0)   96×80  正脸
+  /// (96,16) 32×32  地图小头像
+  /// (96,48) 32×16  とろん目   （仅 FE7/FE8）
+  /// (96,64) 32×16  閉じ目     （仅 FE7/FE8）
+  /// (0,80)  96×32  嘴型 2×3 帧（FE6 是 2×2 + 帧5 两半）
+  /// ```
+  ///
+  /// **不能靠 `faceImage` 等已上色的图拼**：那些图把调色板索引 0 画成透明，
+  /// 而 FE6 的索引 0 是**不透明背景色**（实测罗伊那张 6 块里 47.8% 是索引 0），
+  /// 按透明图拼出来再导入会把背景整块当作「没画」，脸部会少一大半。
+  /// 所以这里直接搬 4bpp 索引，只在最后一步上色。
+  ///
+  /// 取不到图时返回 null。
+  TileImage? sheetMaterialImage(int id) {
+    final e = entryAt(id);
+    if (e == null) return null;
+    final pal = _palette(e.palette);
+    if (pal == null) return null;
+    final faceIdx = faceIndices(id);
+    if (faceIdx == null) return null;
+
+    // 先把各块拆成「每像素一个索引」的网格。
+    // 一律按 40 行建网格（FE6 只有 34 行数据，其余按索引 0 补满）：
+    // 嘴型/眼型的坑位坐标都是按 40 行布局定义的。
+    final faceGrid = _unpackSheet(faceIdx, 40);
+    final face96 = Uint8List(96 * 80);
+    for (final b in _faceBlits) {
+      final dstX = b[0], dstY = b[1], w = b[2], h = b[3];
+      final srcX = b[4], srcY = b[5];
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) {
+          face96[(dstY + y) * 96 + dstX + x] =
+              faceGrid[(srcY + y) * 256 + srcX + x];
+        }
+      }
+    }
+
+    const lw = 128;
+    const lh = 112;
+    final out = Uint8List(lw * lh);
+    void paste(Uint8List src, int sw, int sh, int dx, int dy) {
+      for (var y = 0; y < sh; y++) {
+        for (var x = 0; x < sw; x++) {
+          final tx = dx + x, ty = dy + y;
+          if (tx < 0 || tx >= lw || ty < 0 || ty >= lh) continue;
+          out[ty * lw + tx] = src[y * sw + x];
+        }
+      }
+    }
+
+    paste(face96, 96, 80, 0, 0);
+
+    final mapIdx = mapFaceIndices(id);
+    if (mapIdx != null) paste(_unpack4bpp(mapIdx, 32, 32), 32, 32, 96, 16);
+
+    const mouthY = 80;
+    if (!isFe6) {
+      // 眼型帧与第 7 口在正脸 sheet 右侧：とろん目 (192,0)、(192,16) 閉じ目
+      final eyes = Uint8List(32 * 32);
+      for (var y = 0; y < 32; y++) {
+        for (var x = 0; x < 32; x++) {
+          eyes[y * 32 + x] = faceGrid[y * 256 + 192 + x];
+        }
+      }
+      paste(Uint8List.sublistView(eyes, 0, 32 * 16), 32, 16, 96, 48);
+      paste(Uint8List.sublistView(eyes, 32 * 16, 32 * 32), 32, 16, 96, 64);
+
+      final mouthIdx = mouthIndices(id);
+      if (mouthIdx != null) {
+        final mg = _unpack4bpp(mouthIdx, 32, 96);
+        for (var f = 0; f < 6; f++) {
+          final col = f % 3, row = f ~/ 3;
+          paste(Uint8List.sublistView(mg, f * 32 * 16, (f + 1) * 32 * 16), 32,
+              16, col * 32, mouthY + row * 16);
+        }
+      }
+      // 第 7 口（右端の口）与它下方那格余白：FEBuilderGBA 会把正脸 sheet
+      // 右侧 x=(192..224) 的两格也画进素材图。导回时 `_spreadFe78SheetParts`
+      // 会把它们 blit 回 sheet (224,0)/(224,16)，不写这两格就会把它们清零。
+      for (var row = 0; row < 2; row++) {
+        final cell = Uint8List(32 * 16);
+        for (var y = 0; y < 16; y++) {
+          for (var x = 0; x < 32; x++) {
+            cell[y * 32 + x] = faceGrid[(row * 16 + y) * 256 + 224 + x];
+          }
+        }
+        paste(cell, 32, 16, 96, mouthY + row * 16);
+      }
+    } else {
+      // FE6 嘴型四帧在正脸 sheet 的 (192,0)(224,0)(192,16)(224,16)，
+      // 帧 5 的两半在 (0,32) 与 (32,32)（各 32×8）。
+      const slots = [
+        [192, 0, 0, mouthY, 32, 16],
+        [224, 0, 32, mouthY, 32, 16],
+        [192, 16, 0, mouthY + 16, 32, 16],
+        [224, 16, 32, mouthY + 16, 32, 16],
+      ];
+      for (final s in slots) {
+        final cell = Uint8List(32 * 16);
+        for (var y = 0; y < s[5]; y++) {
+          for (var x = 0; x < s[4]; x++) {
+            cell[y * 32 + x] = faceGrid[(s[1] + y) * 256 + s[0] + x];
+          }
+        }
+        paste(cell, 32, 16, s[2], s[3]);
+      }
+      // 帧 5：素材图右端「口」两半
+      for (var half = 0; half < 2; half++) {
+        final cell = Uint8List(32 * 8);
+        for (var y = 0; y < 8; y++) {
+          for (var x = 0; x < 32; x++) {
+            cell[y * 32 + x] = faceGrid[(32 + y) * 256 + half * 32 + x];
+          }
+        }
+        paste(cell, 32, 8, 96, mouthY + half * 8);
+      }
+    }
+
+    return _colorize(out, pal);
+  }
+
+  /// 正脸 96×80 的六块拼图：(dstX, dstY, w, h, srcX, srcY)。
+  ///
+  /// 与 `faceImage` 的六次 `TileImage.blit`、以及
+  /// `PortraitImporter` / FEBuilderGBA `DrawPortraitSeet` 完全一致。
+  static const List<List<int>> _faceBlits = [
+    [16, 0, 64, 32, 0, 0],
+    [16, 32, 64, 32, 64, 0],
+    [16, 64, 32, 16, 128, 0],
+    [0, 48, 16, 32, 160, 0],
+    [48, 64, 32, 16, 128, 16],
+    [80, 48, 16, 32, 176, 0],
+  ];
+
+  /// 索引网格 → 上色 RGBA。索引 0 在这里也正常上色（不当作透明）——
+  /// 素材图是「看得见的整张图」，背景色属于图的一部分。
+  TileImage _colorize(Uint8List grid, GbaPalette pal, {int width = 128}) {
+    final h = grid.length ~/ width;
+    final img = TileImage(width, h);
+    for (var i = 0; i < grid.length; i++) {
+      final idx = grid[i];
+      final c = pal.color(idx);
+      img.setPixel(i % width, i ~/ width, (c >> 16) & 0xFF,
+          (c >> 8) & 0xFF, c & 0xFF, 0xFF);
+    }
+    return img;
+  }
+
+  /// 256×[height] 的 4bpp sheet → 每像素一个索引的网格（与 `_packGrid` 互逆）。
+  ///
+  /// FE6 的 sheet 只有 34 行（8704 字节），而网格按 40 行布局：越界部分按
+  /// 索引 0 补满。原版 FEBuilderGBA 渲染 FE6 时也是这么处理的
+  /// （`ByteToImage16Tile(256, 40)` 读到 34 行之后全是 0）。
+  Uint8List _unpackSheet(Uint8List sheet, int height) {
+    final grid = Uint8List(256 * height);
+    final tilesPerRow = 256 ~/ 8;
+    const tileRowBytes = 32 * 32;
+    for (var y = 0; y < height; y++) {
+      final band = y ~/ 8, rit = y % 8;
+      for (var tx = 0; tx < tilesPerRow; tx++) {
+        final base = band * tileRowBytes + tx * 32 + rit * 4;
+        if (base + 4 > sheet.length) continue;
+        for (var k = 0; k < 4; k++) {
+          grid[y * 256 + tx * 8 + k * 2] = sheet[base + k] & 0x0F;
+          grid[y * 256 + tx * 8 + k * 2 + 1] = (sheet[base + k] >> 4) & 0x0F;
+        }
+      }
+    }
+    return grid;
+  }
+
+  Uint8List _unpack4bpp(Uint8List data, int width, int height) {
+    final grid = Uint8List(width * height);
+    final tilesPerRow = width ~/ 8;
+    final tileRowBytes = tilesPerRow * 32;
+    for (var y = 0; y < height; y++) {
+      final band = y ~/ 8, rit = y % 8;
+      for (var tx = 0; tx < tilesPerRow; tx++) {
+        final base = band * tileRowBytes + tx * 32 + rit * 4;
+        if (base + 4 > data.length) continue;
+        for (var k = 0; k < 4; k++) {
+          grid[y * width + tx * 8 + k * 2] = data[base + k] & 0x0F;
+          grid[y * width + tx * 8 + k * 2 + 1] = (data[base + k] >> 4) & 0x0F;
+        }
+      }
+    }
+    return grid;
+  }
+
 
   /// face 字段值 → 肖像表索引。超出表范围或无法映射时返回 null。
   ///
@@ -447,6 +688,24 @@ class PortraitReader {
       if (_u16(at + UnitOffsets.portraitId) == face) return i;
     }
     return null;
+  }
+
+  /// 反查所有 face 字段引用 [id] 的单位索引列表。
+  ///
+  /// 与 [unitIndexForFace] 的区别：返回全部匹配（一个肖像可被多个单位共用，如琳有两份出场）。
+  List<int> unitIndicesForPortrait(int id) {
+    final base = rom.unitBase;
+    if (base < 0) return const [];
+    final size = rom.table.unitDataSize;
+    final face = id == 0 ? 0 : id - _faceOffset;
+    if (face < 0) return const [];
+    final result = <int>[];
+    for (var i = 0; i < rom.unitCount; i++) {
+      final at = base + i * size;
+      if (at + 8 > rom.length) break;
+      if (_u16(at + UnitOffsets.portraitId) == face) result.add(i);
+    }
+    return result;
   }
 
   /// 反查使用该「职业卡」肖像的职业表索引，没有则 null。
@@ -567,7 +826,6 @@ class PortraitReader {
   }
 
   void dispose() => _sheetCache.clear();
-
   // ---------- 原始索引（供跨版本移植用，不做像素重建） ----------
   //
   // 上面的 faceImage / mouthFrame 等都返回**上色后的像素**，而移植需要的是

@@ -6,7 +6,9 @@ import 'package:fe_editor/core/rom_session.dart';
 import 'package:fe_editor/core/text_coverage.dart';
 import 'package:fe_editor/core/text_writer.dart';
 
-const _dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const _dir = romDir;
 
 RomSession _open(String name) =>
     RomSession.open(File('$_dir/$name').readAsBytesSync(), name)!;

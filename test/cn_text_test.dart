@@ -3,12 +3,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/text_codec.dart';
 
+import 'rom_paths.dart';
+
 const cn7 =
-    '/root/workspace/game-rom/火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';
+    romDir + '/火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';
 const jp7 =
-    '/root/workspace/game-rom/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
+    romDir + '/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const cn6 =
-    '/root/workspace/game-rom/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
+    romDir + '/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
 
 void main() {
   test('汉化版烈火之剑识别为明文 GBK', () async {

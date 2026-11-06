@@ -163,6 +163,9 @@ class MapSpriteReader {
     return b > 0 && b + 8 <= rom.length;
   }
 
+  /// 表基址（写回时用来定位表项）。不可用时返回 -1。
+  int get tableBase => available ? _tableBase : -1;
+
   /// 表条目数（遇到非法条目即停）。
   int get count => available ? _runLength(_tableBase) : 0;
 

@@ -6,11 +6,13 @@ import 'package:fe_editor/core/editable_rom.dart';
 import 'package:fe_editor/core/rom_session.dart';
 import 'package:fe_editor/ui/simulator_page.dart';
 
+import 'rom_paths.dart';
+
 /// 模拟器页面（战斗/成长模拟器）的 widget 测试。
 ///
 /// 覆盖：两个 tab、角色/武器选择器、改前 vs 改后对比模式的三种状态
 /// （未改动 / 已改动 / 战斗双卡片）。
-const dir = '/root/workspace/game-rom';
+const dir = romDir;
 const fe8jp =
     '$dir/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
 

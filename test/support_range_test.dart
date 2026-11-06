@@ -7,7 +7,9 @@ import 'package:fe_editor/core/editable_rom.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/support_range.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 
 Uint8List _rom(String prefix) {
   final f = Directory(dir)

@@ -4,9 +4,11 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/text_codec.dart';
 import 'package:fe_editor/core/zh_table.dart';
 
+import 'rom_paths.dart';
+
 const cn6 =
-    '/root/workspace/game-rom/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
-const tbl = '/root/workspace/fe_editor/assets/tbl/FE6.tbl';
+    romDir + '/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
+const tbl = 'assets/tbl/FE6.tbl';
 
 void main() {
   test('FE6 汉化版挂载 .tbl 后解出角色名', () async {

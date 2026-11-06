@@ -8,6 +8,7 @@ import '../core/portrait.dart';
 import '../core/rom_info.dart';
 import '../core/support.dart';
 import '../core/tile_image.dart';
+import 'class_terrain_card.dart';
 import 'portrait_page.dart';
 import 'text_edit_dialog.dart';
 
@@ -258,7 +259,7 @@ class ClassListPage extends StatefulWidget {
 }
 
 class _ClassListPageState extends State<ClassListPage> {
-  late final PortraitReader _reader = PortraitReader(widget.edit.rom);
+  late final PortraitReader _reader = PortraitReader(widget.edit.liveRom);
   late final MapSpriteReader _sprites = MapSpriteReader(widget.edit.rom);
   late List<String> _names = _build();
   String _query = '';
@@ -339,7 +340,7 @@ class _ClassListPageState extends State<ClassListPage> {
                         ? PortraitView(
                             tile: img,
                             cacheKey: PortraitImageCache.instance
-                                .keyFor(widget.edit.rom.fingerprint,
+                                .keyForRom(widget.edit.liveRom,
                                     0x4000 + (sprite!.id & 0xFFF), 9),
                             width: 40,
                             height: 40,
@@ -348,7 +349,7 @@ class _ClassListPageState extends State<ClassListPage> {
                             ? PortraitView(
                                 tile: mapFace,
                                 cacheKey:
-                                    PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, pid, 7),
+                                    PortraitImageCache.instance.keyForRom(widget.edit.liveRom, pid, 7),
                                 width: 40,
                                 height: 40,
                               )
@@ -384,7 +385,7 @@ class ClassEditPage extends StatefulWidget {
 
 class _ClassEditPageState extends State<ClassEditPage> {
   late final int _addr = widget.edit.classAddress(widget.index);
-  late final PortraitReader _reader = PortraitReader(widget.edit.rom);
+  late final PortraitReader _reader = PortraitReader(widget.edit.liveRom);
   late final MapSpriteReader _sprites = MapSpriteReader(widget.edit.rom);
   bool get _canEdit => versionSupportsEditing(widget.edit.rom.table.id);
 
@@ -509,6 +510,18 @@ class _ClassEditPageState extends State<ClassEditPage> {
               ),
             ],
           _classFlagsCard(),
+          sectionTitle(context, '地形'),
+          Card(
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              child: ClassTerrainCard(
+                edit: widget.edit,
+                classIndex: widget.index,
+                readOnly: !_canEdit,
+              ),
+            ),
+          ),
           const SizedBox(height: 12),
           addressNote(_addr),
         ],
@@ -601,7 +614,7 @@ class _ClassEditPageState extends State<ClassEditPage> {
                 PortraitView(
                   tile: sprite,
                   cacheKey: PortraitImageCache.instance
-                      .keyFor(widget.edit.rom.fingerprint,
+                      .keyForRom(widget.edit.liveRom,
                           0x4000 + (spriteEntry!.id & 0xFFF), 9),
                   width: 80,
                   height: (sprite.height * 80 / sprite.width).toDouble(),
@@ -615,7 +628,7 @@ class _ClassEditPageState extends State<ClassEditPage> {
               children: [
                 PortraitView(
                   tile: mapFace,
-                  cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, pid, 7),
+                  cacheKey: PortraitImageCache.instance.keyForRom(widget.edit.liveRom, pid, 7),
                   width: 80,
                   height: 80,
                 ),
@@ -627,7 +640,7 @@ class _ClassEditPageState extends State<ClassEditPage> {
               children: [
                 PortraitView(
                   tile: card,
-                  cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, pid, 8),
+                  cacheKey: PortraitImageCache.instance.keyForRom(widget.edit.liveRom, pid, 8),
                   width: 100,
                   height: 100,
                 ),
@@ -657,7 +670,7 @@ class UnitListPage extends StatefulWidget {
 }
 
 class _UnitListPageState extends State<UnitListPage> {
-  late final PortraitReader _reader = PortraitReader(widget.edit.rom);
+  late final PortraitReader _reader = PortraitReader(widget.edit.liveRom);
   late List<String> _names = _build();
   String _query = '';
 
@@ -725,7 +738,7 @@ class _UnitListPageState extends State<UnitListPage> {
                     )
                   : PortraitView(
                       tile: img,
-                      cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, faceId!, 1),
+                      cacheKey: PortraitImageCache.instance.keyForRom(widget.edit.liveRom, faceId!, 1),
                       width: 40,
                       height: 40,
                     ),
@@ -784,7 +797,7 @@ class UnitEditPage extends StatefulWidget {
 
 class _UnitEditPageState extends State<UnitEditPage> {
   late final PortraitReader _reader =
-      widget.reader ?? PortraitReader(widget.edit.rom);
+      widget.reader ?? PortraitReader(widget.edit.liveRom);
   late final bool _ownsReader = widget.reader == null;
   late final int _addr = widget.edit.unitAddress(widget.index);
   bool get _canEdit => versionSupportsEditing(widget.edit.rom.table.id);
@@ -841,7 +854,7 @@ class _UnitEditPageState extends State<UnitEditPage> {
         children: [
           _UnitHeader(
             face: faceImg,
-            cacheKey: PortraitImageCache.instance.keyFor(widget.edit.rom.fingerprint, portraitId ?? -1, 2),
+            cacheKey: PortraitImageCache.instance.keyForRom(widget.edit.liveRom, portraitId ?? -1, 2),
             faceId: portraitId,
             className: cname,
             classId: cid,

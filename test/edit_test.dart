@@ -5,8 +5,10 @@ import 'package:fe_editor/core/editable_rom.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/patch_format.dart';
 
+import 'rom_paths.dart';
+
 const jp =
-    '/root/workspace/game-rom/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
+    romDir + '/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 
 void main() {
   test('修改角色字段并导出，重新打开能读回新值', () async {

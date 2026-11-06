@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../core/app_log.dart';
 import '../core/app_settings.dart';
 import '../core/mcp_service.dart';
+import 'mcp_panel.dart';
 
 /// 设置页。
 ///
 /// - 「覆盖模式」：对齐口袋改版工具盒的习惯，保存时直接写回原 ROM，
 ///   而不是生成 `_modified` 副本。
 /// - 「外观」：浅色 / 暗色 / 跟随系统，切换即时生效并持久化。
+/// - 「MCP」：状态摘要卡片，点开弹圆形图标面板（[McpMenuPanel]），
+///   面板内集中管理 启停 / 地址 / 局域网 / Token。
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
@@ -23,20 +25,14 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _on = AppSettings.instance.overwriteMode;
   late int _mode = AppSettings.instance.themeModeIndex;
 
-  /// MCP 服务是否在跑（与端口一起显示，方便复制到客户端配置里）。
-  late bool _mcpOn = McpService.instance.running;
-  int _mcpPort = McpService.instance.port;
-  bool _mcpBusy = false;
-  String? _mcpError;
-  bool _allowLan = McpService.instance.allowLan;
-  String _mcpToken = '';
-  List<String> _mcpAddresses = const [];
-
   static const _themeLabels = ['跟随系统', '浅色', '暗色'];
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final mcp = McpService.instance;
+    final mcpOn = mcp.running;
+    final mcpPort = mcp.port;
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
       body: ListView(
@@ -88,192 +84,91 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const Divider(height: 24),
           _sectionHeader(context, 'MCP（给 AI 客户端用）'),
-          SwitchListTile(
-            value: _mcpOn,
-            onChanged: _mcpBusy ? null : _toggleMcp,
-            title: const Text('启动 MCP 服务器'),
-            subtitle: Text(_mcpOn
-                ? '监听 http://127.0.0.1:$_mcpPort（仅本机可访问）\\n'
-                    '把该地址填进 MCP 客户端即可读写当前打开的 ROM'
-                : '开启后，AI 客户端可以通过 MCP 协议读取与修改当前打开的 ROM'),
-            isThreeLine: true,
-          ),
-          if (_mcpOn)
-            SwitchListTile(
-              value: _allowLan,
-              onChanged: (v) async {
-                await McpService.instance.stop();
-                final t = v
-                    ? (_mcpToken.isEmpty ? McpService.newToken() : _mcpToken)
-                    : '';
-                setState(() {
-                  _allowLan = v;
-                  _mcpToken = t;
-                });
-                final p = await McpService.instance.start(
-                    allowLan: v, token: t);
-                if (!mounted) return;
-                setState(() {
-                  _mcpOn = p > 0;
-                  _mcpPort = p;
-                  _mcpToken = McpService.instance.token;
-                });
-                if (p > 0) await _refreshAddresses();
-              },
-              title: const Text('允许局域网访问'),
-              subtitle: const Text(
-                '开启后同一 Wi-Fi 下的电脑才能连（地址会变成手机 IP）。'
-                '此时必须带访问口令，否则任何人都能改你的 ROM。默认关闭。',
-              ),
-              isThreeLine: true,
-            ),
-          if (_mcpError != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.errorContainer,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _mcpError!,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: theme.colorScheme.onErrorContainer,
-                    height: 1.5,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Material(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () async {
+                  await showMcpMenuPanel(context);
+                  if (mounted) setState(() {});
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: mcpOn
+                              ? Colors.green.withAlpha(30)
+                              : Colors.grey.withAlpha(30),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          mcpOn ? Icons.cloud_done : Icons.cloud_off,
+                          size: 22,
+                          color: mcpOn
+                              ? Colors.green
+                              : theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              mcpOn
+                                  ? 'MCP 服务运行中 · 端口 $mcpPort'
+                                  : 'MCP 服务已停止',
+                              style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              mcpOn
+                                  ? '把连接地址填进 AI 客户端即可读写当前 ROM'
+                                  : '开启后可让 AI 客户端读写当前打开的 ROM',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(Icons.chevron_right,
+                          color: theme.colorScheme.onSurfaceVariant),
+                    ],
                   ),
                 ),
               ),
             ),
-          if (_mcpOn)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('MCP 地址（点一下复制）',
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: theme.colorScheme.onSurfaceVariant)),
-                    const SizedBox(height: 2),
-                    for (final addr in _mcpAddresses)
-                      InkWell(
-                        onTap: () {
-                          Clipboard.setData(ClipboardData(text: addr));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('已复制 $addr')),
-                          );
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
-                          child: Text(addr,
-                              style: const TextStyle(
-                                  fontSize: 13, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                    if (_mcpToken.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text('访问口令（客户端必须带）',
-                          style: TextStyle(
-                              fontSize: 11,
-                              color: theme.colorScheme.onSurfaceVariant)),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: SelectableText(_mcpToken,
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.bold)),
-                          ),
-                          IconButton(
-                            visualDensity: VisualDensity.compact,
-                            tooltip: '换一个口令',
-                            icon: const Icon(Icons.refresh, size: 18),
-                            onPressed: () async {
-                              await McpService.instance.stop();
-                              final t = McpService.newToken();
-                              setState(() => _mcpToken = t);
-                              final p = await McpService.instance.start(
-                                  allowLan: _allowLan, token: t);
-                              if (!mounted) return;
-                              setState(() {
-                                _mcpOn = p > 0;
-                                _mcpPort = p;
-                              });
-                              await _refreshAddresses();
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                    const SizedBox(height: 6),
-                    Text(
-                      '所有改动与界面共用一个 ROM 缓冲区：客户端改了字节，'
-                      '界面上的「已修改」计数会跟着涨，也能用「撤销全部修改」还原。'
-                      '\n\nApp 申请网络权限只用于 MCP 的本机回环 / 局域网调试，'
-                      '不向任何外部服务器发送你的 ROM 或个人信息。',
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: theme.colorScheme.onSurfaceVariant,
-                          height: 1.5),
-                    ),
-                  ],
-                ),
-              ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              '点上面卡片打开 MCP 面板：圆形图标管理「运行 / 地址 / 局域网 / Token」，'
+              '「MCP 地址」里可一键复制连接信息。\n\n'
+              '所有改动与界面共用一个 ROM 缓冲区：客户端改了字节，界面上的'
+              '「已修改」计数会跟着涨，也能用「撤销全部修改」还原。\n\n'
+              'App 申请网络权限只用于 MCP 的本机回环 / 局域网调试，'
+              '不向任何外部服务器发送你的 ROM 或个人信息。',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: theme.colorScheme.onSurfaceVariant,
+                  height: 1.5),
             ),
+          ),
         ],
       ),
     );
-  }
-
-  Future<void> _toggleMcp(bool value) async {
-    setState(() => _mcpBusy = true);
-    if (value) {
-      final port = await McpService.instance.start();
-      if (!mounted) return;
-      setState(() {
-        _mcpBusy = false;
-        _mcpOn = port > 0;
-        _mcpPort = port;
-        _mcpToken = McpService.instance.token;
-        _allowLan = McpService.instance.allowLan;
-      });
-      if (port > 0) await _refreshAddresses();
-      if (port == 0) {
-        final reason = McpService.instance.lastError ?? '未知原因';
-        setState(() => _mcpError = reason);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('MCP 启动失败：$reason')),
-        );
-      } else {
-        setState(() => _mcpError = null);
-      }
-    } else {
-      await McpService.instance.stop();
-      if (!mounted) return;
-      setState(() {
-        _mcpBusy = false;
-        _mcpOn = false;
-        _mcpPort = 0;
-        _mcpError = null;
-      });
-    }
-  }
-
-  Future<void> _refreshAddresses() async {
-    final list = await McpService.instance.addresses();
-    if (!mounted) return;
-    setState(() => _mcpAddresses = list);
   }
 
   Widget _sectionHeader(BuildContext context, String text) {

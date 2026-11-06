@@ -5,8 +5,10 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/zh_table.dart';
 import 'package:fe_editor/core/zh_tables_data.dart';
 
+import 'rom_paths.dart';
+
 const fe6cn =
-    '/root/workspace/game-rom/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
+    romDir + '/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
 const fe6Header = 48;
 
 void main() {

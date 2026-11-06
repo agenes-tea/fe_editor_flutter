@@ -37,6 +37,12 @@ Future<String?> pickPatchFile() async {
   return (path == null || path.isEmpty) ? null : path;
 }
 
+/// 选一张图片（肖像导入用），读进缓存后返回真实路径；取消时返回 null。
+Future<String?> pickImageFile() async {
+  final path = await _channel.invokeMethod<String>('pickImage');
+  return (path == null || path.isEmpty) ? null : path;
+}
+
 /// 把改后的 ROM 分享到系统，让用户挑模拟器（mGBA 等）直接打开。
 ///
 /// 成功返回 null；失败/无原生通道时返回原因文本（给界面提示用）。
@@ -102,9 +108,13 @@ Future<String?> readSettingsFile() async {
 }
 
 /// 写入设置文件内容。
+///
+/// 原生分支 `result.success(true)` 回的是 **bool**，所以这里**不能**用
+/// `invokeMethod<String>`（会把 bool cast 成 String? 抛 `type 'bool' is not a
+/// subtype of type 'String?'`）。用无泛型调用，原生返回的 true 不作类型转换。
 Future<void> writeSettingsFile(String text) async {
   try {
-    await _channel.invokeMethod<String>('writeSettings', {'text': text});
+    await _channel.invokeMethod('writeSettings', {'text': text});
   } on MissingPluginException {
     // 测试环境没有原生通道，忽略
   }

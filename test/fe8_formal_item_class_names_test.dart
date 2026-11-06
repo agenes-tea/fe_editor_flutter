@@ -7,15 +7,17 @@ import 'package:fe_editor/core/item_catalog.dart';
 import 'package:fe_editor/core/zh_table.dart';
 import 'package:fe_editor/core/zh_tables_data.dart';
 
+import 'rom_paths.dart';
+
 /// 汉化版职业名 / 道具名的正式译名处理。
 ///
 /// 与角色名同因：汉化组按读音抓同音字，「铁剑」显示成「条健」、
 /// 「领主」显示成「凌诸」、「圣骑士」显示成「盛齐始」。
 /// 这里验证 `classDisplayName` / `itemDisplayName` 只在挂了码表的
 /// 汉化版上替换，且不影响日版与原始解码。
-const fe8cn = '/root/workspace/game-rom/火炎之纹章-圣魔之光石汉化.gba';
+const fe8cn = romDir + '/火炎之纹章-圣魔之光石汉化.gba';
 const fe8jp =
-    '/root/workspace/game-rom/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
+    romDir + '/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
 
 FeRom _openCn() {
   final data = File(fe8cn).readAsBytesSync();

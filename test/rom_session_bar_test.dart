@@ -7,7 +7,9 @@ import 'package:fe_editor/core/rom_info.dart';
 import 'package:fe_editor/core/rom_session.dart';
 import 'package:fe_editor/ui/rom_session_bar.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe7jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe8jp = '$dir/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
 

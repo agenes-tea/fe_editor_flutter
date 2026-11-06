@@ -3,9 +3,14 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../core/asset_library.dart';
+import '../core/battle_anim.dart' show encodePng;
 import '../core/editable_rom.dart';
+import '../core/fe_rom.dart';
+import '../core/file_picker_service.dart';
 import '../core/portrait.dart';
 import '../core/tile_image.dart';
+import 'portrait_import_page.dart';
 
 /// 把 [TileImage] 的 RGBA 字节转成可绘制的 `ui.Image`，并按 key 缓存。
 ///
@@ -25,14 +30,55 @@ class PortraitImageCache {
   static const int cacheLimit = 96;
   final _images = <int, ui.Image>{};
 
-  /// 拼 key：ROM 指纹 | 索引 | 用途，三段互不重叠。
+  /// 每次写入肖像后自增。参与 key，让写入后的新图不会命中旧缓存。
   ///
-  /// 不直接用「索引 × 1000 + 用途」—— 那只能在单 ROM 内唯一，
-  /// 跨 ROM 会直接撞上，把上一个 ROM 的图端出来。
-  int keyFor(int romTag, int portraitId, int purpose) {
-    final id = portraitId & 0xFFFF;
-    return (romTag & 0xFFFFFFFF) * 0x100000 + (id * 16) + (purpose & 0xF);
+  /// 不用「清空 map」实现：清空会让正在显示的 [RawImage] 拿到已失效句柄，
+  /// 且旧图其实还在 widget 手上一段时间，不如换个 key 让它自然失效。
+  int _generation = 0;
+
+  /// 告诉缓存「ROM 内容变了」。调用后所有 key 都会变，下次 build 重新解码。
+  void invalidate() {
+    _generation++;
+    // 旧图不 dispose（见 [clear] 的说明），只从 map 里丢掉引用
+    _images.clear();
   }
+
+  /// 把 [romTag]（指纹）与 [contentVersion] 合成一个稳定的缓存键前缀。
+  ///
+  /// 不用乘法拼接（`指纹 × N + 代次 × M`）：位域重叠，不同指纹配不同
+  /// 代次会撞 key。用顺序哈希把几段揉进一个整数，冲突只影响缓存命中率。
+  int _baseKey(int romTag, int contentVersion) {
+    var h = 0x811C9DC5;
+    for (final v in [romTag, contentVersion, _generation]) {
+      var x = v & 0xFFFFFFFF;
+      for (var i = 0; i < 4; i++) {
+        h ^= x & 0xFF;
+        h = (h * 0x01000193) & 0x7FFFFFFF;
+        x >>= 8;
+      }
+    }
+    return h;
+  }
+
+  /// 拼 key：ROM 指纹 | 内容版本号 | 代次 | 索引 | 用途。
+  ///
+  /// **必须传 `contentVersion`**（`EditableRom.contentVersion`）：指纹是
+  /// **打开时**算的，写 ROM 不会变它。以前只看指纹，导入一张脸后撤销全部，
+  /// 界面就一直显示导入的那张。参数写成可选只为兼容旧调用点。
+  int keyFor(int romTag, int portraitId, int purpose,
+      {int contentVersion = 0}) {
+    final id = portraitId & 0xFFFF;
+    return _baseKey(romTag, contentVersion) * 0x1000 +
+        ((id & 0xFFF) << 4) +
+        (purpose & 0xF);
+  }
+
+  /// 直接用 ROM 视图拼 key（推荐）：指纹 + 内容版本号自动带上。
+  ///
+  /// 必须传**实时视图**（`EditableRom.liveRom`），因为内容版本号记在它身上。
+  int keyForRom(FeRom rom, int portraitId, int purpose) => keyFor(
+      rom.fingerprint, portraitId, purpose,
+      contentVersion: rom.contentVersion);
 
   Future<ui.Image> load(int key, TileImage tile) async {
     final cached = _images[key];
@@ -55,15 +101,15 @@ class PortraitImageCache {
   }
 
   void clear() {
-    for (final img in _images.values) {
-      img.dispose();
-    }
+    // **不能 dispose**：界面上正在显示的 RawImage 还持着这些句柄，
+    // dispose 后 Flutter 会在下一帧 throw「Cannot clone a disposed image」。
+    // 交给 GC —— 这里的图最多几十张，不主动释放不会有可见的内存压力。
     _images.clear();
   }
 }
 
 /// 统一的图像展示控件：异步解码 + 缓存 + 失败兜底。
-class PortraitView extends StatelessWidget {
+class PortraitView extends StatefulWidget {
   final TileImage tile;
   final int cacheKey;
   final double? width;
@@ -78,9 +124,41 @@ class PortraitView extends StatelessWidget {
   });
 
   @override
+  State<PortraitView> createState() => _PortraitViewState();
+}
+
+class _PortraitViewState extends State<PortraitView> {
+  Future<ui.Image>? _future;
+  int? _key;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(PortraitView old) {
+    super.didUpdateWidget(old);
+    // key 变了（换 ROM / 换条目 / 缓存被清后重算）就必须重新取图，
+    // 否则 FutureBuilder 会一直拿着旧的已完成 future，界面永远不更新。
+    if (old.cacheKey != widget.cacheKey || old.tile != widget.tile) {
+      _load();
+    }
+  }
+
+  void _load() {
+    _key = widget.cacheKey;
+    _future = PortraitImageCache.instance.load(widget.cacheKey, widget.tile);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final width = widget.width;
+    final height = widget.height;
     return FutureBuilder<ui.Image>(
-      future: PortraitImageCache.instance.load(cacheKey, tile),
+      key: ValueKey(_key),
+      future: _future,
       builder: (ctx, snap) {
         if (!snap.hasData) {
           return SizedBox(
@@ -122,12 +200,17 @@ class PortraitListPage extends StatefulWidget {
 }
 
 class _PortraitListPageState extends State<PortraitListPage> {
-  late final PortraitReader _reader = PortraitReader(widget.edit.rom);
+  int? _selectedId;
+  late PortraitReader _reader = PortraitReader(widget.edit.liveRom);
   final List<_PortraitTile> _items = [];
   int _scanned = 0;
   bool _done = false;
   bool _unavailable = false;
   String _query = '';
+  /// 导入后覆盖的肖像名：key=portrait ID，value=导入时计算出的显示名。
+  /// 用于「导入后 portrait editor 仍显示旧角色名」的问题——portrait table
+  /// entry 已更新，但 unit table 的 face 字段未变，nameFor(id) 仍返回旧名。
+  final Map<int, String> _importedNames = {};
 
   /// 每批构建条数：每条含 sheet 解码 + 名字反查，比纯文本重，批次取小些。
   static const int _batchSize = 20;
@@ -156,7 +239,8 @@ class _PortraitListPageState extends State<PortraitListPage> {
     final batch = <_PortraitTile>[];
     for (var id = _scanned; id < end; id++) {
       if (!_reader.hasImage(id)) continue;
-      batch.add(_PortraitTile(id, _reader.nameFor(id), _reader.isHalfBody(id)));
+      final name = _importedNames[id] ?? _reader.nameFor(id);
+      batch.add(_PortraitTile(id, name, _reader.isHalfBody(id)));
     }
     if (!mounted) return;
     setState(() {
@@ -192,6 +276,35 @@ class _PortraitListPageState extends State<PortraitListPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_done ? '肖像 ($_itemsCount)' : '肖像 (加载中 $_itemsCount…)'),
+        actions: [
+          IconButton(
+            tooltip: '用外部图片新建肖像',
+            icon: const Icon(Icons.add_photo_alternate_outlined),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => PortraitImportPage(
+                        edit: widget.edit,
+                        initialTargetId: _selectedId)),
+              ).then((result) {
+                // 子页面可能写入了肖像：reader 里的 sheet 缓存是旧图，
+                // 不重建的话详情页会一直显示写入前的脸（只有不走缓存
+                // 的嘴型帧会变成新图——实测就是这个现象）。
+                _reader.dispose();
+                _reader = PortraitReader(widget.edit.liveRom);
+                if (result != null && mounted) {
+                  final id = result['id'] as int?;
+                  final name = result['name'] as String?;
+                  if (id != null && name != null) {
+                    setState(() => _importedNames[id] = name);
+                  }
+                }
+                setState(() {});
+              });
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -235,7 +348,7 @@ class _PortraitListPageState extends State<PortraitListPage> {
                         : PortraitView(
                             tile: face,
                             cacheKey:
-                                PortraitImageCache.instance.keyFor(_reader.rom.fingerprint, t.id, 1),
+                                PortraitImageCache.instance.keyForRom(_reader.rom, t.id, 1),
                             width: 40,
                             height: 40,
                           ),
@@ -293,12 +406,46 @@ class PortraitDetailPage extends StatelessWidget {
     required this.name,
   });
 
+  /// 导出档名后缀：可再导入的素材图与内部 sheet 分开，避免同名覆盖。
+  static const String _materialSuffix = '_sheet';
+  static const String _rawSuffix = '_raw';
+
   @override
   Widget build(BuildContext context) {
     final half = reader.isHalfBody(id);
     final face = reader.faceImage(id);
     return Scaffold(
-      appBar: AppBar(title: Text(name.isEmpty ? '肖像 $id' : name)),
+      appBar: AppBar(
+        title: Text(name.isEmpty ? '肖像 $id' : name),
+        actions: [
+          if (face != null)
+            IconButton(
+              tooltip: '存入素材库',
+              icon: const Icon(Icons.save_alt),
+              onPressed: () => _saveAsset(context, face),
+            ),
+          if (face != null)
+            IconButton(
+              tooltip: '导出素材图（128×112，可再导回游戏）',
+              icon: const Icon(Icons.view_comfy_alt_outlined),
+              onPressed: () {
+                final sheet = reader.sheetMaterialImage(id);
+                if (sheet == null) return;
+                _saveAsset(context, sheet, suffix: _materialSuffix);
+              },
+            ),
+          if (face != null)
+            IconButton(
+              tooltip: '导出原始 sheet（256×40，仅供查看，不能导回）',
+              icon: const Icon(Icons.view_comfy_alt_outlined),
+              onPressed: () {
+                final sheet = reader.fullSheetImage(id);
+                if (sheet == null) return;
+                _saveAsset(context, sheet, suffix: _rawSuffix);
+              },
+            ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -311,7 +458,7 @@ class PortraitDetailPage extends StatelessWidget {
                   )
                 : PortraitView(
                     tile: face,
-                    cacheKey: PortraitImageCache.instance.keyFor(reader.rom.fingerprint, id, 2),
+                    cacheKey: PortraitImageCache.instance.keyForRom(reader.rom, id, 2),
                     width: 96,
                     height: 80,
                   ),
@@ -350,6 +497,33 @@ class PortraitDetailPage extends StatelessWidget {
     );
   }
 
+  /// 把当前肖像存到素材库；未配置素材库时退回「另存为」。
+  ///
+  /// [suffix] 区分档名：正脸空白（
+  /// `portrait_001_罗伊.png`），素材图 `_sheet`，原始 sheet `_raw`。
+  Future<void> _saveAsset(BuildContext context, TileImage face,
+      {String suffix = ''}) async {
+    final safeName =
+        name.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final fileName =
+        'portrait_${id.toString().padLeft(3, '0')}'
+        '${safeName.isEmpty ? '' : '_$safeName'}$suffix.png';
+    final png = encodePng(face);
+    final messenger = ScaffoldMessenger.of(context);
+    if (AssetLibrary.instance.configured) {
+      final ok = await AssetLibrary.instance.write(fileName, png);
+      messenger.showSnackBar(SnackBar(
+        content: Text(ok
+            ? '已存入素材库 $fileName'
+            : '存入素材库失败：${AssetLibrary.instance.lastError ?? '未知原因'}'),
+      ));
+      return;
+    }
+    final saved = await saveFile(fileName, png);
+    messenger.showSnackBar(
+        SnackBar(content: Text(saved == null ? '已取消' : '已保存 $fileName')));
+  }
+
   Widget _frameRow(String label, List<(String, TileImage?)> frames) {
     final shown = frames.where((f) => f.$2 != null).toList();
     if (shown.isEmpty) return const SizedBox.shrink();
@@ -370,7 +544,7 @@ class PortraitDetailPage extends StatelessWidget {
                     // cacheKey 必须每帧唯一，否则不同帧会互相覆盖缓存而串图
                     _Preview(
                       tile: shown[i].$2!,
-                      cacheKey: PortraitImageCache.instance.keyFor(reader.rom.fingerprint, id, 3 + i),
+                      cacheKey: PortraitImageCache.instance.keyForRom(reader.rom, id, 3 + i),
                     ),
                     Text(shown[i].$1, style: const TextStyle(fontSize: 11)),
                   ],

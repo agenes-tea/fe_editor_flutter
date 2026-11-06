@@ -7,11 +7,13 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/playable_units.dart';
 import 'package:fe_editor/core/unit_placement.dart';
 
+import 'rom_paths.dart';
+
 /// 修改器的「作用范围」判据。
 ///
 /// 背景：单位表里**没有阵营字段**，阵营写在关卡事件 `UnitDefinition.allegiance`。
 /// 直接「全表加满」会把敌方也一起加强，所以要有一套判据把玩家角色挑出来。
-const dir = '/root/workspace/game-rom';
+const dir = romDir;
 const fe6cn = '$dir/火焰纹章 - 封印之剑[狼组&火花天龙剑](v20060906)(简)(JP)(64Mb).gba';
 const fe7jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe7us = '$dir/1235 - 火炎之纹章-烈火之剑 Fire Emblem(US)(Nintendo)(128Mb).gba';

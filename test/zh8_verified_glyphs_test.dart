@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 
+import 'rom_paths.dart';
+
 /// FE8 汉化版（火花天龙剑 & 狼组）**已验证**的「码位 → 汉字」映射。
 ///
 /// ## 推导方法（可复现）
@@ -36,9 +38,9 @@ const fe8ZhVerified = <int, String>{
   0x95BF: '忒',   0x95EE: '娅',
 };
 
-const fe8cn = '/root/workspace/game-rom/火炎之纹章-圣魔之光石汉化.gba';
+const fe8cn = romDir + '/火炎之纹章-圣魔之光石汉化.gba';
 const fe8jp =
-    '/root/workspace/game-rom/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
+    romDir + '/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
 
 /// 满足「日文假名数 == 中文汉字数」的 nameTextId → 中文译名。
 ///

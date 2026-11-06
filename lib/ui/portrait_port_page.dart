@@ -6,6 +6,7 @@ import '../core/portrait.dart';
 import '../core/portrait_porter.dart';
 import '../core/rom_session.dart';
 import '../core/tile_image.dart';
+import 'portrait_page.dart' show PortraitImageCache;
 
 /// 跨版本肖像移植页。
 ///
@@ -93,6 +94,11 @@ class _PortraitPortPageState extends State<PortraitPortPage> {
       _selected,
       replaceTargetId: _replaceMode ? _replaceInto : null,
     );
+    if (outcome.ok) {
+      // 缓存 key 是「指纹 + 肖像 ID + 用途」，写入后这些 key 全都没变，
+      // 不清缓存的话界面会继续端出写入前的旧图（用户看到的就是「移植了但没变化」）。
+      PortraitImageCache.instance.invalidate();
+    }
     setState(() {
       _busy = false;
       _status = outcome.ok

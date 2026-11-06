@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
 import '../core/battle_anim.dart';
+import '../core/asset_library.dart';
 import '../core/editable_rom.dart';
 import '../core/tile_image.dart';
 import '../core/file_picker_service.dart';
@@ -227,9 +229,7 @@ class _BattleAnimDetailPageState extends State<BattleAnimDetailPage> {
     if (img == null) return;
     final name = 'banim_${_entry.abbr}_m${_modeIndex}_f$_frameIndex'
         '_p$_paletteGroup.png';
-    final saved = await saveFile(name, encodePng(img));
-    if (!mounted) return;
-    _toast(saved == null ? '已取消' : '已保存 $name');
+    await _savePng(name, encodePng(img));
   }
 
   Future<void> _exportSheet() async {
@@ -244,7 +244,22 @@ class _BattleAnimDetailPageState extends State<BattleAnimDetailPage> {
     }
     final name = 'banim_${_entry.abbr}_m${_modeIndex}_sheet'
         '_p$_paletteGroup.png';
-    final saved = await saveFile(name, encodePng(sheet));
+    await _savePng(name, encodePng(sheet));
+  }
+
+  /// 存 PNG：配置了素材库就直接写进去（不弹系统框），否则退回「另存为」。
+  Future<void> _savePng(String name, Uint8List png) async {
+    if (AssetLibrary.instance.configured) {
+      final ok = await AssetLibrary.instance.write(name, png);
+      if (!mounted) return;
+      if (ok) {
+        _toast('已存入素材库 $name');
+      } else {
+        _toast('存入素材库失败：${AssetLibrary.instance.lastError ?? '未知原因'}');
+      }
+      return;
+    }
+    final saved = await saveFile(name, png);
     if (!mounted) return;
     _toast(saved == null ? '已取消' : '已保存 $name');
   }

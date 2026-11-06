@@ -4,7 +4,9 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/text_codec.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 
 /// 用户提供的「已装好调试器」圣魔之光石成品（18768416 B，FE8 美版底 + 汉化）。
 ///

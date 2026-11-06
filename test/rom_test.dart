@@ -4,7 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/text_codec.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const us = '$dir/1235 - 火炎之纹章-烈火之剑 Fire Emblem(US)(Nintendo)(128Mb).gba';
 const fe7cn = '$dir/火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';
@@ -94,5 +96,21 @@ void main() {
     expect(rom.className(1), 'ロード');
     expect(rom.itemName(1), 'てつの剣');
     expect(rom.itemName(3), 'はがねの剣');
+  });
+
+  // 回归：指纹只采样头尾 4KB 时，「换了中段肖像图的副本」与原版指纹相同，
+  // 于是打开原版会直接复用到旧会话 / 图像缓存撞车（游戏里却是真图）。
+  test('指纹覆盖全文件：中段字节不同就应不同', () async {
+    final data = await File(fe7cn).readAsBytes();
+    final table = FeRom.detectTable(data)!;
+    final a = FeRom(Uint8List.fromList(data), table).fingerprint;
+
+    final mutated = Uint8List.fromList(data);
+    // 改中段一个字节（远离头尾 4KB）
+    mutated[mutated.length ~/ 2] ^= 0xFF;
+    final b = FeRom(mutated, table).fingerprint;
+
+    expect(a, isNot(b),
+        reason: '中段改动必须影响指纹，否则缓存与多会话会认错 ROM');
   });
 }

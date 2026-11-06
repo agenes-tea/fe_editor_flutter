@@ -9,7 +9,9 @@ import 'package:fe_editor/ui/item_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const _dir = romDir;
 
 FeRom _open(String keyword) {
   final f = Directory(_dir)

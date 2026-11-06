@@ -1,4 +1,5 @@
 import 'disassembler.dart';
+import 'editable_rom.dart';
 import 'fe_rom.dart';
 
 /// 章节事件的**触发条件**种类。
@@ -105,6 +106,13 @@ class LoadedUnit {
 
   /// 表内索引（`pid` 是 1 基）。
   int get unitIndex => charId - 1;
+
+  /// 第 [index] 个道具槽的文件偏移。
+  ///
+  /// 与 [PlacedUnit] 同构但**按本版本条目大小推导**，不能直接用 [LoadedUnit.addr]
+  /// 加固定常数：FE8 条目 20 字节（items@+12），FE6/FE7 是 16 字节（items@+8）。
+  int itemAddress(int index, {required bool isFe8}) =>
+      addr + (isFe8 ? 12 : 8) + index;
 }
 
 /// 章节事件读取（触发条件 + 增援/出击指令）。
@@ -673,6 +681,25 @@ class ChapterEvents {
       if (c > 0 && commandSize(table, c) >= 2) return c;
     }
     return -1;
+  }
+
+  /// 改写事件里某个单位的道具槽（**原地覆盖 4 字节，不插指令**）。
+  ///
+  /// 事件里的单位是 `UnitDefinition` 结构体，道具就是它的 4 个 u8 字段。
+  /// 改它只碰这 4 个字节，不移动任何脚本/数组，因此不触碰「不插入事件指令」
+  /// 这条安全边界（AGENTS §15h 限制的是脚本指令流，不是数据字段）。
+  ///
+  /// 返回写入的字节数；越界或参数非法返回 -1，值未变返回 0。
+  int setUnitItem(EditableRom edit, LoadedUnit unit, int index, int itemId) {
+    if (index < 0 || index > 3) return -1;
+    final at = unit.itemAddress(index, isFe8: _isFe8);
+    if (at < 0 || at >= edit.buffer.length) return -1;
+    final value = itemId & 0xFF;
+    final before = edit.buffer.u8(at);
+    if (before == value) return 0;
+    edit.buffer.writeU8(at, value);
+    edit.edits.add(ByteEdit(at, before, value));
+    return 1;
   }
 
   /// FE6/FE7 的对话显示命令号候选（与 `ChapterDialogues` 一致，逐版实测定）。

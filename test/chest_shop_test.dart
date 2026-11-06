@@ -6,13 +6,15 @@ import 'package:fe_editor/core/chest_shop.dart';
 import 'package:fe_editor/core/rom_session.dart';
 import 'package:fe_editor/core/unit_placement.dart';
 
+import 'rom_paths.dart';
+
 /// 宝箱奖励 / 商店列表（chest_shop）在真实 ROM 上的读写测试。
 ///
 /// 锚点来自探针 `_probe_shop_test.dart` 的实测输出：
 /// - FE8J 第 3 章 (6,3) 宝箱 w2=0x14；第 2 章 (5,7) 商店列表 [1,2,20,21,31]
 /// - FE7J 第 6 章 (12,6) 宝箱 w2=0x5A；第 3 章 (13,7) 商店列表 [1,20]
 /// - FE6  第 3 章 (22,12) 宝箱 w2=0xBB8006F（**高 16 位非 0**，写时必须保留）
-const dir = '/root/workspace/game-rom';
+const dir = romDir;
 const fe7jp =
     '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe8jp =

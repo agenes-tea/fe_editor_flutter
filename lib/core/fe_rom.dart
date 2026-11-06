@@ -24,31 +24,35 @@ class FeRom {
   /// 中文码表（汉化版 Huffman 文本用）；可后置设置。
   ZhTable? zhTable;
 
+  /// 内容版本号：同一份 ROM 被改写一次就自增一次。
+  ///
+  /// [fingerprint] 是**打开时**算好的内容指纹，写入只改 [data] 里的字节，
+  /// 指纹不会变——所以任何「按 ROM 身份做 key」的缓存（肖像、地图小人、
+  /// 战斗动画）都不能只看指纹，否则写完仍命中旧图。
+  ///
+  /// 取值来自**进程级单调递增计数器**，不复位。这一点是必需的：
+  /// 若每份 ROM 都从 0 数起，「重新打开同一个文件」会得到同一个版本号，
+  /// 全局图像缓存仍然命中上一份会话的图（实测就是这样：游戏里正常、
+  /// 工具里死守着上次导入的那张）。
+  int contentVersion = _nextContentVersion();
+
+  static int _tick = 0;
+  static int _nextContentVersion() => ++_tick;
+
   FeRom(this.data, this.table);
 
   int get length => data.length;
 
   /// ROM 内容指纹，用于隔离跨 ROM 的缓存。
   ///
-  /// 取长度 + 头部 + 尾部样本算 CRC32：同一份 ROM 多次打开结果相同，
-  /// 不同 ROM 撞车概率可忽略。
-  late final int fingerprint = _computeFingerprint();
-
-  int _computeFingerprint() {
-    const sample = 4096;
-    final head = data.length <= sample ? data.length : sample;
-    final tail = data.length <= sample * 2 ? 0 : sample;
-    final buf = Uint8List(head + tail + 4);
-    buf[0] = data.length & 0xFF;
-    buf[1] = (data.length >> 8) & 0xFF;
-    buf[2] = (data.length >> 16) & 0xFF;
-    buf[3] = (data.length >> 24) & 0xFF;
-    buf.setRange(4, 4 + head, data);
-    if (tail > 0) {
-      buf.setRange(4 + head, buf.length, data, data.length - tail);
-    }
-    return crc32(buf);
-  }
+  /// **对整份文件算 CRC32**，不是只采样头尾：
+  /// 肖像表、数据表都住在 ROM 中段，而常见操作（换一张肖像图）
+  /// 只改中段几千字节。只采样头尾时「改了图的副本」与「原版」
+  /// 指纹完全相同，于是：
+  /// - `RomWorkspace.open` 会把它们当成同一份 ROM（直接切到旧会话）；
+  /// - 图像缓存 key 撞车，表现为「打开原版却能看见改过的图」。
+  /// 全文件 CRC 对该量级（8~32MB）只需几十毫秒，一次性开销。
+  late final int fingerprint = crc32(data);
 
   static bool _isSafeOffset(int v) => v >= 0 && v < 0x02000000;
 

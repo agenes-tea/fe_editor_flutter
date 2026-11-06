@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/patch_format.dart';
 import 'package:fe_editor/core/rom_buffer.dart';
 
+import 'rom_paths.dart';
+
 Uint8List bytes(List<int> v) => Uint8List.fromList(v);
 
 void main() {
@@ -50,7 +52,7 @@ void main() {
 
     test('真实 ROM：改动后往返', () async {
       final data = await File(
-              '/root/workspace/game-rom/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba')
+              romDir + '/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba')
           .readAsBytes();
       final dst = Uint8List.fromList(data);
       // 改单位表里几个字节

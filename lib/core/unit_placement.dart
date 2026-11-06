@@ -124,6 +124,11 @@ class UnitPlacement {
   final EditableRom edit;
   UnitPlacement(this.edit);
 
+  /// 章节标题缓存：`describe_rom` 一次要列 107 章的标题，
+  /// 每次走 `decodeText`（GBK 查表 + 指针解引用）累加起来会超过
+  /// MCP 单次调用超时。标题是纯文本、不随编辑变化，缓存安全。
+  final Map<int, String> _titleCache = {};
+
   FeRom get rom => edit.rom;
 
   bool get isFe8 => _isFe8Table;
@@ -242,6 +247,14 @@ class UnitPlacement {
   /// 注意本工具章节下标是 0 基：游戏内「第 1 章」通常就是这里的第 0 章。
   /// 展示标题是为了让内容与游戏逐字对上，避免「编号差一章」的困惑。
   String chapterTitle(int chapter) {
+    final cached = _titleCache[chapter];
+    if (cached != null) return cached;
+    final title = _chapterTitleUncached(chapter);
+    _titleCache[chapter] = title;
+    return title;
+  }
+
+  String _chapterTitleUncached(int chapter) {
     if (chapter < 0 || chapter >= chapterCount) return '';
     if (_settingSize < 0x72) return '';
     final at = settingBase + _settingSize * chapter;

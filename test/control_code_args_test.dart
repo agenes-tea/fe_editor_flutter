@@ -9,7 +9,9 @@ import 'package:fe_editor/core/text_browser.dart';
 import 'package:fe_editor/core/text_control.dart';
 import 'package:fe_editor/core/text_writer.dart';
 
-const _dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const _dir = romDir;
 const _gbk = '火焰纹章 - 烈火之剑[Superxyj](简)(JP)(145.61Mb).gba';
 
 RomSession _open(String name) =>

@@ -63,7 +63,10 @@ class McpServer(
         authToken: String = "",
     ): Int {
         synchronized(this) {
-            if (serverSocket != null) return port
+            // 先把已经在跑的实例停掉再重绑。否则切「局域网」这类配置变更时，
+            // 旧 socket 还占着端口，新的 bind 会撞 EADDRINUSE，用户看到
+            // 「端口被占用」却明明是自己刚开的服务。
+            if (serverSocket != null) stop()
             token = if (allowLan) authToken else ""
             val host = if (allowLan) "0.0.0.0" else "127.0.0.1"
             val ss = try {
@@ -83,6 +86,10 @@ class McpServer(
                 )
             }
             port = ss.localPort
+            // **必须存回字段**：stop() 靠它关 socket、running 靠它判状态。
+            // 漏了这一句会导致 socket 永不关闭（端口被泄漏占用）、
+            // running 恒为 false（界面显示未运行），且每次开启都撞已占用。
+            serverSocket = ss
             acceptThread = Thread({
                 while (!ss.isClosed) {
                     val client = try {
@@ -99,19 +106,21 @@ class McpServer(
 
     fun stop() {
         synchronized(this) {
+            val ss = serverSocket
+            serverSocket = null
             try {
-                serverSocket?.close()
+                ss?.close()
             } catch (_: IOException) {
             }
-            // 等监听线程真正退出，确保端口已经释放；
-            // 否则紧接着再 start() 可能仍撞上「端口被占用」。
+            // close() 后监听线程的 accept() 会立即抛 IOException 退出，
+            // 通常几毫秒就结束。最多等 300ms（原来 1000ms 会让
+            // 频繁开关时每次多卡一秒，体感是「有延迟」）。
             acceptThread?.let { t ->
                 try {
-                    t.join(1000)
+                    t.join(300)
                 } catch (_: InterruptedException) {
                 }
             }
-            serverSocket = null
             acceptThread = null
             port = 0
         }

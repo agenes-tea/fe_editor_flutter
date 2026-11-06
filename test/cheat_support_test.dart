@@ -8,8 +8,10 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/playable_units.dart';
 import 'package:fe_editor/core/support.dart';
 
+import 'rom_paths.dart';
+
 Uint8List _rom() {
-  final dir = Directory('/root/workspace/game-rom');
+  final dir = Directory(romDir);
   final f = dir
       .listSync()
       .whereType<File>()

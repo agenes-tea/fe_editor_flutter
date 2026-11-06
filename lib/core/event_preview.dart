@@ -374,13 +374,20 @@ class EventPreviewer {
 
     final events = <PreviewEvent>[];
     for (final e in ev.all(group)) {
-      final units = <PreviewEventUnit>[];
+      final raw = <PreviewEventUnit>[];
       final eventIssues = <String>[];
       if (e.script != 0 && FeRom.isPointer(e.script, rom.length)) {
         for (final u in ev.loadedUnits(e.script)) {
-          units.add(_unit(rom, u, width, height, eventIssues));
+          raw.add(_unit(rom, u, width, height, eventIssues));
         }
       }
+      // 同阵营内按「角色+坐标+等级」去重：同一个单位数组被两条 LOADUNIT
+      // 引用时会出现重复项，列两遍会让人以为生成了两个。
+      final seen = <String>{};
+      final units = raw.where((u) {
+        final key = '${u.charId}|${u.x}|${u.y}|${u.level}|${u.allegiance}';
+        return seen.add(key);
+      }).toList();
       events.add(PreviewEvent(
         addr: e.addr,
         kind: e.kind,

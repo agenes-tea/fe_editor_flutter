@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fe_editor/core/app_meta.dart';
 import 'package:fe_editor/core/feature_flags.dart';
@@ -8,11 +9,19 @@ import 'package:fe_editor/ui/settings_page.dart';
 import 'package:flutter/material.dart';
 import 'package:fe_editor/core/app_settings.dart';
 import 'package:fe_editor/core/custom_roster.dart';
+import 'package:fe_editor/core/asset_library.dart';
+import 'package:fe_editor/core/asset_store.dart';
+import 'package:fe_editor/core/external_workspace.dart';
 import 'package:fe_editor/core/mcp_server.dart';
+import 'asset_store_test.dart' show MemAssetFs;
 import 'package:fe_editor/core/mcp_service.dart';
 import 'package:fe_editor/core/rom_workspace.dart';
+import 'package:fe_editor/core/battle_anim.dart' show encodePng;
+import 'package:fe_editor/core/tile_image.dart';
 
-const dir = '/root/workspace/game-rom';
+import 'rom_paths.dart';
+
+const dir = romDir;
 const fe6jp = '$dir/0378 - 火炎之纹章-封印之剑 Fire Emblem - Fuuin no Tsurugi(JP)(Nintendo)(64Mb).gba';
 const fe7jp = '$dir/0979 - 火炎之纹章-烈火之剑 Fire Emblem - Rekka no Ken(JP)(Nintendo)(128Mb).gba';
 const fe8jp = '$dir/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
@@ -414,17 +423,82 @@ void main() {
       // running 依赖原生，单元测试里起不来；这里直接验证分支语义
       expect(s.allowLan, isFalse);
     });
+
+    test('start() 不再自动生成口令（局域网无口令不强制）', () async {
+      // 回归：旧逻辑在 allowLan && token.isEmpty 时无条件 newToken()，
+      // 导致用户永远无法「局域网 + 无口令」或「单独关 Token」。
+      final s = McpService.instance;
+      await s.stop();
+      final prevToken = s.token;
+      final prevLan = s.allowLan;
+      addTearDown(() {
+        // 单例是全局的，改过的状态必须还原，否则会污染后面的清 UI 用例。
+        s.token = prevToken;
+        s.allowLan = prevLan;
+      });
+      s.token = '';
+      // 单元测试里没有原生通道，start() 会失败返回 0；
+      // 我们只关心它有没有偷偷把 token 填上。
+      await s.start(allowLan: true, token: '');
+      expect(s.token, isEmpty,
+          reason: 'start() 不得自动生成 token（应由界面弹框确认）');
+    });
   });
 
   group('设置页入口', () {
-    testWidgets('显示 MCP 开关，默认关闭且不显示地址', (tester) async {
+    testWidgets('MCP 卡片：未启动显示「已停止」且不露出地址', (tester) async {
+      // stop() 走 MethodChannel（无原生通道），必须在真实 async 里执行，
+      // 不能直接 await（FakeAsync 下会挂起卡死）。
+      await tester.runAsync(() => McpService.instance.stop());
       await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.text('MCP（给 AI 客户端用）'), findsOneWidget);
-      expect(find.text('启动 MCP 服务器'), findsOneWidget);
-      // 没开启时不该显示地址块
+      expect(find.text('MCP 服务已停止'), findsOneWidget);
+      // 未启动不该在卡片上直接露出连接地址
       expect(find.textContaining('http://127.0.0.1'), findsNothing);
+    });
+
+    testWidgets('点 MCP 卡片弹圆形面板，含 4 个图标与地址入口', (tester) async {
+      await tester.runAsync(() => McpService.instance.stop());
+      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('MCP 服务已停止'));
+      await tester.pumpAndSettle();
+
+      // 圆形面板弹出，四个操作图标都在
+      expect(find.text('MCP 停止'), findsOneWidget);
+      expect(find.text('MCP 地址'), findsOneWidget);
+      expect(find.text('局域网关'), findsOneWidget);
+      expect(find.text('生成 Token'), findsOneWidget);
+
+      // 未启动时点「MCP 地址」给 SnackBar 提示（不弹对话框）
+      await tester.tap(find.text('MCP 地址'));
+      await tester.pumpAndSettle();
+      expect(find.text('MCP 服务未启动，先点「MCP 运行」启动'), findsOneWidget);
+    });
+
+    test('三个 MCP 操作都必须复位 _busy（否则点一次后按钮永久失效）', () {
+      // 回归：_busy 置 true 后从不复位，导致点过一次后所有按钮失效——
+      // 用户看到的是「怎么点都点不动，得关掉面板重开才行」。
+      //
+      // 为什么用静态断言而不是 widget 测试：单元测试里没有原生通道，
+      // _toggleLan/_regenToken 第一步 await _svc.stop() 就抛异常，
+      // 根本走不到 _busy = true 这句，widget 测试抓不住。
+      final src = File(
+        '${Directory.current.path}/lib/ui/mcp_panel.dart',
+      ).readAsStringSync();
+      // 每个 setState(() => _busy = true) 后面都要有对应的复位
+      final sets = RegExp(r'_busy = true').allMatches(src).length;
+      // 排除字段初始值 `bool _busy = false;`，那里的 false 不是复位。
+      final resets = RegExp(r'if \(mounted\) setState\(\(\) => _busy = false\)')
+          .allMatches(src)
+          .length;
+      expect(sets, greaterThanOrEqualTo(3), reason: '三个操作各自置位');
+      expect(resets, sets,
+          reason: '置位 ' + sets.toString() + ' 次、复位 ' + resets.toString() +
+              ' 次——必须一一对应，否则按钮会永久失效');
     });
   });
 
@@ -630,7 +704,7 @@ void main() {
       final r = await h.tool('describe_rom');
       expect(r['version'], 'FE6');
       expect(r['tables']['units']['count'], greaterThan(100));
-      expect((r['tables']['chapters'] as int), greaterThan(10));
+      expect((r['tables']['chapter_count'] as int), greaterThan(10));
     });
   });
 
@@ -1860,7 +1934,7 @@ void main() {
     });
   });
 
-  group('外部工作区', () {
+  group('外部工作区与素材库', () {
     test('未设置工作区时 list_workspace_roms 给出提示而不是报错', () async {
       final h = Harness();
       McpServer.instance.attach(h.ws);
@@ -1889,6 +1963,329 @@ void main() {
       final content = ((r['result'] as Map)['contents'] as List).first as Map;
       expect(content['text'], contains('外部工作区'));
     });
+
+    test('未设置素材库时 list_asset_library 给出提示而不是报错', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      final r = await h.tool('list_asset_library');
+      expect(r['__error'], isNull, reason: r['__error']?.toString());
+      expect(r['configured'], isFalse);
+      expect(r['hint'], contains('素材库'));
+    });
+
+    test('资源 fe://workspace/assets 没打开 ROM 也能读', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      final r = await h.call(jsonEncode({
+        'jsonrpc': '2.0',
+        'id': 1,
+        'method': 'resources/read',
+        'params': {'uri': 'fe://workspace/assets'},
+      }));
+      final content = ((r['result'] as Map)['contents'] as List).first as Map;
+      expect(content['text'], contains('素材库'));
+    });
+
+    test('已设置素材库时 list_asset_library 能读到目录路径与文件', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final channel = const MethodChannel('fe_editor/files');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'assetDir':
+            return {
+              'uri': 'content://docs/tree/ASSETS',
+              'name': 'MyAssets',
+            };
+          case 'listAssets':
+            return [
+              {'name': 'lynn.png', 'size': 12345, 'modified': 0},
+              {'name': 'anim01.png', 'size': 999, 'modified': 0},
+            ];
+          default:
+            return null;
+        }
+      });
+      try {
+        await AssetLibrary.instance.load();
+        final h = Harness();
+        McpServer.instance.attach(h.ws);
+        final r = await h.tool('list_asset_library');
+        expect(r['__error'], isNull, reason: r['__error']?.toString());
+        expect(r['configured'], isTrue);
+        expect(r['dir_name'], 'MyAssets');
+        expect(r['dir_uri'], 'content://docs/tree/ASSETS');
+        expect(r['count'], 2);
+        final assets = (r['assets'] as List).cast<Map>();
+        expect(assets.first['name'], 'lynn.png');
+        expect(assets.first['size'], 12345);
+      } finally {
+        await AssetLibrary.instance.clear();
+        messenger.setMockMethodCallHandler(channel, null);
+      }
+    });
+
+    test('已设置工作区时 list_workspace_roms 能读到目录路径', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final channel = const MethodChannel('fe_editor/files');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'workspaceDir':
+            return {
+              'uri': 'content://docs/tree/ROMS',
+              'name': 'MyRoms',
+            };
+          case 'listWorkspaceRoms':
+            return [
+              {'name': 'base.gba', 'size': 16777216, 'modified': 0},
+            ];
+          default:
+            return null;
+        }
+      });
+      try {
+        await ExternalWorkspace.instance.load();
+        final h = Harness();
+        McpServer.instance.attach(h.ws);
+        final r = await h.tool('list_workspace_roms');
+        expect(r['__error'], isNull, reason: r['__error']?.toString());
+        expect(r['configured'], isTrue);
+        expect(r['dir_uri'], 'content://docs/tree/ROMS');
+        expect(r['count'], 1);
+        final roms = (r['roms'] as List).cast<Map>();
+        expect(roms.first['name'], 'base.gba');
+      } finally {
+        await ExternalWorkspace.instance.clear();
+        messenger.setMockMethodCallHandler(channel, null);
+      }
+    });
+
+    test('read_asset / write_asset 未设置素材库时报可理解的错', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      expect((await h.tool('read_asset', {'name': 'a.png'}))['__error'],
+          contains('素材库'));
+      expect(
+          (await h.tool(
+              'write_asset', {'name': 'a.png', 'text': 'x'}))['__error'],
+          contains('素材库'));
+    });
+
+    test('read_asset 能读到 base64 与 mime，超 max_bytes 时报错', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final channel = const MethodChannel('fe_editor/files');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final png = Uint8List.fromList([0x89, 0x50, 0x4E, 0x47, 0x0D]);
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'assetDir':
+            return {
+              'uri': 'content://docs/tree/ASSETS',
+              'name': 'MyAssets',
+            };
+          case 'readAsset':
+            return png;
+          default:
+            return null;
+        }
+      });
+      try {
+        await AssetLibrary.instance.load();
+        final h = Harness();
+        McpServer.instance.attach(h.ws);
+        final r = await h.tool('read_asset', {'name': 'lynn.png'});
+        expect(r['__error'], isNull, reason: r['__error']?.toString());
+        expect(r['name'], 'lynn.png');
+        expect(r['mime'], 'image/png');
+        expect(r['size'], 5);
+        expect(r['base64'], base64Encode(png));
+        final tooBig = await h.tool(
+            'read_asset', {'name': 'lynn.png', 'max_bytes': 2});
+        expect(tooBig['__error'], contains('超过 max_bytes'));
+      } finally {
+        await AssetLibrary.instance.clear();
+        messenger.setMockMethodCallHandler(channel, null);
+      }
+    });
+
+    test('write_asset 文本与 base64 都能写，缺内容时报错', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final channel = const MethodChannel('fe_editor/files');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final writes = <dynamic>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'assetDir':
+            return {
+              'uri': 'content://docs/tree/ASSETS',
+              'name': 'MyAssets',
+            };
+          case 'writeAsset':
+            writes.add(call.arguments);
+            return true;
+          default:
+            return null;
+        }
+      });
+      try {
+        await AssetLibrary.instance.load();
+        final h = Harness();
+        McpServer.instance.attach(h.ws);
+        final r1 =
+            await h.tool('write_asset', {'name': 'note.txt', 'text': 'hi'});
+        expect(r1['__error'], isNull, reason: r1['__error']?.toString());
+        expect(r1['ok'], isTrue);
+        expect(r1['mime'], 'text/plain');
+        expect((writes.last['bytes'] as List<int>).length, 2);
+        final b64 = base64Encode([0x89, 0x50, 0x4E, 0x47]);
+        final r2 =
+            await h.tool('write_asset', {'name': 'x.png', 'base64': b64});
+        expect(r2['__error'], isNull, reason: r2['__error']?.toString());
+        expect(r2['mime'], 'image/png');
+        expect(writes.last['bytes'], [0x89, 0x50, 0x4E, 0x47]);
+        final r3 = await h.tool('write_asset', {'name': 'empty.txt'});
+        expect(r3['__error'], contains('base64'));
+      } finally {
+        await AssetLibrary.instance.clear();
+        messenger.setMockMethodCallHandler(channel, null);
+      }
+    });
+  });
+  _portraitImportTests();
+  _assetChannelTests();
+}
+
+// ---------------------------------------------------------------------------
+// AssetStore handle 通道（纪律：返回值绝不带内容）
+// ---------------------------------------------------------------------------
+void _assetChannelTests() {
+  group('素材 handle 通道', () {
+    late MemAssetFs fs;
+
+    setUp(() {
+      // 用内存文件系统，测试不碰原生通道
+      fs = MemAssetFs();
+      McpServer.instance.assetStoreFactory =
+          (project) => AssetStore(project: project, fs: fs);
+    });
+
+    tearDown(() {
+      McpServer.instance.assetStoreFactory = null;
+    });
+
+    test('list_assets 在没有素材时返回空而不是报错', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(_gbkRom()).readAsBytesSync(), 'gbk.gba');
+      final r = await h.tool('list_assets');
+      expect(r['__error'], isNull, reason: r['__error']?.toString());
+      expect(r['count'], 0);
+      expect(r['project'], isA<String>());
+      expect(r['assets'], isEmpty);
+    });
+
+    test('list_assets / asset_info 的返回不含任何内容字段', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(_gbkRom()).readAsBytesSync(), 'gbk.gba');
+      final r = await h.tool('list_assets');
+      final text = jsonEncode(r);
+      // 硬纪律：整包 JSON 里不许出现表示内容的键
+      expect(text.contains('"base64"'), isFalse);
+      expect(text.contains('"bytes"'), isFalse);
+    });
+
+    test('asset_info 缺 handle / handle 不存在 都给出可理解提示', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(_gbkRom()).readAsBytesSync(), 'gbk.gba');
+      expect((await h.tool('asset_info'))['__error'], contains('handle'));
+      expect((await h.tool('asset_info', {'handle': 'ffffffffffffffff'}))['__error'],
+          contains('素材'));
+    });
+
+    test('import_asset 只接受 handle，target 必须带 kind', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(_gbkRom()).readAsBytesSync(), 'gbk.gba');
+      // 没有 handle
+      expect((await h.tool('import_asset', {'target': {'kind': 'portrait', 'id': 1}}))['__error'],
+          contains('handle'));
+      // kind 不支持时要说清楚支持什么
+      final r = await h.tool('import_asset', {
+        'handle': 'abcabcabcabcabca',
+        'target': {'kind': 'music', 'id': 1},
+      });
+      expect(r['__error'], contains('portrait'));
+    });
+
+    test('export_asset_from_rom 写进素材库并返回 handle（不含字节）', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(fe7jp).readAsBytesSync(), '烈火.gba');
+      final r = await h.tool('export_asset_from_rom', {
+        'source': {'kind': 'portrait_png', 'id': 22},
+      });
+      expect(r['__error'], isNull, reason: r['__error']?.toString());
+      expect(r['handle'], isA<String>());
+      expect((r['handle'] as String).length, 16);
+      expect(r['type'], 'image');
+      expect(jsonEncode(r).contains('"base64"'), isFalse);
+
+      // 导出后能在列表里看到（同一个项目仓库）
+      final listed = await h.tool('list_assets');
+      final handles = [
+        for (final a in (listed['assets'] as List).cast<Map>()) a['handle']
+      ];
+      expect(handles, contains(r['handle']));
+    });
+
+    test('copy_asset_between_sessions 会把素材也落进目标项目', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(fe7jp).readAsBytesSync(), '烈火.gba');
+
+      // 先从 FE7J 导出一份
+      final exported = await h.tool('export_asset_from_rom', {
+        'source': {'kind': 'portrait_png', 'id': 22},
+        'rom': 'FE7J',
+      });
+      final handle = exported['handle'] as String;
+
+      final copied = await h.tool('copy_asset_between_sessions', {
+        'handle': handle,
+        'to': 'FE7J',
+        'target': {'kind': 'portrait', 'id': 23},
+      });
+      expect(copied['__error'], isNull, reason: copied['__error']?.toString());
+
+      // 关键：目标项目的仓库里也要有这条素材（之前会静默丢掉）
+      final info = await h.tool('asset_info', {'handle': handle});
+      expect(info['__error'], isNull, reason: info['__error']?.toString());
+      expect((info['refs'] as List), contains('FE7J:portrait:23'));
+    });
+
+    test('delete_asset 删除后列表里就没有了', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(fe7jp).readAsBytesSync(), 'e.gba');
+      final exported = await h.tool('export_asset_from_rom', {
+        'source': {'kind': 'portrait_png', 'id': 22},
+      });
+      final handle = exported['handle'] as String;
+      final del = await h.tool('delete_asset', {'handle': handle, 'force': true});
+      expect(del['__error'], isNull, reason: del['__error']?.toString());
+      final listed = await h.tool('list_assets');
+      final handles = [
+        for (final a in (listed['assets'] as List).cast<Map>()) a['handle']
+      ];
+      expect(handles, isNot(contains(handle)));
+    });
   });
 }
 
@@ -1905,4 +2302,102 @@ String _gbkRom() {
     if (f is File && f.path.contains('Superxyj')) return f.path;
   }
   throw StateError('找不到明文 GBK 的 ROM');
+}
+
+// ---------------------------------------------------------------------------
+// 肖像导入：用真实 PNG 走一遍 MCP 通道
+// ---------------------------------------------------------------------------
+void _portraitImportTests() {
+  group('肖像导入 import_portrait_image', () {
+    /// 造一张 16×16 的左红右蓝 PNG（用项目自己的 encodePng）。
+    String twoTonePng() {
+      const w = 16, h = 16;
+      final img = TileImage(w, h);
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) {
+          final left = x < w ~/ 2;
+          img.setPixel(x, y, left ? 220 : 20, 20, left ? 20 : 220, 255);
+        }
+      }
+      return base64Encode(encodePng(img));
+    }
+
+    test('写入后能用 get_portrait_png 看到新图，且可撤销', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(fe7jp).readAsBytesSync(), '烈火.gba');
+
+      // 先确认目标条目原本有图
+      final before = await h.tool('get_portrait_png', {'id': 44});
+      expect(before, isA<Map>());
+      final beforeB64 = (before as Map)['base64'] as String;
+
+      final r = await h.tool('import_portrait_image', {
+        'target_id': 44,
+        'png_base64': twoTonePng(),
+      });
+      expect(r, isA<Map>());
+      expect((r as Map)['target_id'], 44);
+      expect(r['used_colors'], lessThanOrEqualTo(16));
+      expect(r['bytes_written'], greaterThan(0));
+
+      final after = await h.tool('get_portrait_png', {'id': 44});
+      final afterB64 = (after as Map)['base64'] as String;
+      expect(afterB64, isNot(beforeB64), reason: '换脸后导出的 PNG 应不同');
+
+      // 撤销后回到原样
+      await h.tool('revert_changes', {});
+      final back = await h.tool('get_portrait_png', {'id': 44});
+      expect((back as Map)['base64'], beforeB64);
+    });
+
+    test('dry_run 不真的写', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(fe7jp).readAsBytesSync(), '烈火.gba');
+      final before = await h.tool('get_portrait_png', {'id': 44});
+      final r = await h.tool('import_portrait_image', {
+        'target_id': 44,
+        'png_base64': twoTonePng(),
+        'dry_run': true,
+      });
+      expect((r as Map)['dry_run'], isTrue);
+      expect((r as Map)['rolled_back'], isTrue);
+      final after = await h.tool('get_portrait_png', {'id': 44});
+      expect((after as Map)['base64'], (before as Map)['base64']);
+    });
+
+    test('参数缺失/非法时报可理解的错', () async {
+      final h = Harness();
+      McpServer.instance.attach(h.ws);
+      await h.ws.open(File(fe7jp).readAsBytesSync(), '烈火.gba');
+
+      final noTarget = await h.tool('import_portrait_image', {
+        'png_base64': twoTonePng(),
+      });
+      expect((noTarget as Map)['__error'], contains('target_id'));
+
+      final noPng = await h.tool('import_portrait_image', {'target_id': 44});
+      expect((noPng as Map)['__error'], contains('png_base64'));
+
+      final badB64 = await h.tool('import_portrait_image', {
+        'target_id': 44,
+        'png_base64': 'not-base64!!!',
+      });
+      expect((badB64 as Map)['__error'], contains('base64'));
+
+      final notPng = await h.tool('import_portrait_image', {
+        'target_id': 44,
+        'png_base64': base64Encode([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+      });
+      expect((notPng as Map)['__error'], contains('PNG'));
+
+      final badFit = await h.tool('import_portrait_image', {
+        'target_id': 44,
+        'png_base64': twoTonePng(),
+        'fit': 'stretch',
+      });
+      expect((badFit as Map)['__error'], contains('fit'));
+    });
+  });
 }

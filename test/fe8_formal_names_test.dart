@@ -6,6 +6,8 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/zh_table.dart';
 import 'package:fe_editor/core/zh_tables_data.dart';
 
+import 'rom_paths.dart';
+
 /// 汉化版（火花天龙剑 & 狼组）的同音替代字处理。
 ///
 /// 当年的汉化组按读音抓同音字塞进码表、没考虑字义，所以游戏里「利昂」显示成
@@ -13,9 +15,9 @@ import 'package:fe_editor/core/zh_tables_data.dart';
 /// 这不是乱码也不是 bug。这里验证两点：
 /// 1. `unitName` 仍返回 ROM 原文（同音字），文本查看器等需要原文的地方不受影响；
 /// 2. `unitDisplayName` 返回正式译名，只在挂了中文码表的汉化版上生效。
-const fe8cn = '/root/workspace/game-rom/火炎之纹章-圣魔之光石汉化.gba';
+const fe8cn = romDir + '/火炎之纹章-圣魔之光石汉化.gba';
 const fe8jp =
-    '/root/workspace/game-rom/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
+    romDir + '/1692 - 火炎之纹章-圣魔之光石 Fire Emblem - Seima no Kouseki(JP)(Nintendo)(128Mb).gba';
 
 FeRom _openCn() {
   final data = File(fe8cn).readAsBytesSync();

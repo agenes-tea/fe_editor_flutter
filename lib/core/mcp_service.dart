@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
 import 'app_log.dart';
+import 'app_settings.dart';
 import 'mcp_server.dart';
 import 'rom_workspace.dart';
 
@@ -97,34 +98,106 @@ class McpService {
     });
   }
 
-  /// 启动服务，返回端口；失败返回 0。
+  /// 启动服务，返回实际监听端口；失败返回 0。
+  ///
+  /// 两重稳健性：
+  /// - **幂等**：服务已在跑、且本次没要求改参数时，直接返回现用端口，
+  ///   不重复 bind（否则同一个 App 连点两次开关会自己撞自己端口）。
+  /// - **端口被占自动换**：首选端口被**外部**进程占着时，逐个 +1 试到 +7，
+  ///   而不是直接判失败——用户手机上常驻程序占掉 8422 不该让 MCP 起不来。
+  ///   只有非「占用」类错误才判定失败。
   Future<int> start({
     int preferredPort = 8422,
     bool? allowLan,
     String? token,
   }) async {
+    if (_port > 0 && allowLan == null && token == null) {
+      return _port;
+    }
     _lastError = null;
     if (allowLan != null) this.allowLan = allowLan;
     if (token != null) this.token = token;
-    if (this.allowLan && this.token.isEmpty) {
-      this.token = newToken();
-    }
-    try {
-      final p = await _files.invokeMethod<int>('mcpStart', {
-        'port': preferredPort,
-        'allowLan': this.allowLan,
-        'token': this.token,
-      });
-      _port = p ?? 0;
-      if (_port > 0) {
-        AppLog.instance.log('info', 'MCP 服务已启动：http://127.0.0.1:$_port');
+    // 不在此自动生成 Token：开局域网不强制口令，由界面弹风险确认决定。
+    // 启动时若局域网开着且无口令，同样保留无口令（不弹框，避免冷启动阻塞）。
+    // 先把「准备用这套配置起服务」记下来：就算这次没起来（如端口被占），
+    // 下次重启也按用户想要的状态恢复，而不是退回默认的关。
+    await _persist(running: true);
+    for (var p = preferredPort; p < preferredPort + 8; p++) {
+      try {
+        final actual = await _files.invokeMethod<int>('mcpStart', {
+          'port': p,
+          'allowLan': this.allowLan,
+          'token': this.token,
+        });
+        _port = actual ?? 0;
+        if (_port > 0) {
+          AppLog.instance.log(
+              'info',
+              this.allowLan
+                  ? 'MCP 服务已启动（局域网）：端口 $_port'
+                  : 'MCP 服务已启动：http://127.0.0.1:$_port');
+          return _port;
+        }
+        // 返回 0 而不是抛异常（原生侧已把失败吞成 0）：与「端口被占」同样处理，
+        // 继续试下一个端口，否则会直接放弃整个换端口重试。
+        AppLog.instance.log('warn', 'MCP 端口 $p 启动失败，改用 ${p + 1}');
+        continue;
+      } on PlatformException catch (e) {
+        if (p < preferredPort + 7 && _isPortBusy(e)) {
+          AppLog.instance.log('warn', 'MCP 端口 $p 被占用，改用 ${p + 1}');
+          continue;
+        }
+        AppLog.instance.log('error', 'MCP 启动失败: $e');
+        _lastError = _describe(e);
+        _port = 0;
+        await _persist(running: false);
+        return 0;
+      } catch (e) {
+        // 非 PlatformException 也不能让换端口循环直接崩（如无原生通道时的
+        // MissingPluginException、或原生侧意外抛的其它异常）。
+        AppLog.instance.log('error', 'MCP 启动异常: $e');
+        _lastError = _describe(e);
+        _port = 0;
+        await _persist(running: false);
+        return 0;
       }
-      return _port;
+    }
+    return 0;
+  }
+
+  /// 启动失败是否属于「端口被外部占用」——是才值得换个端口重试。
+  static bool _isPortBusy(Object e) {
+    final t = e.toString();
+    return t.contains('占用') ||
+        t.contains('EADDRINUSE') ||
+        t.toLowerCase().contains('in use');
+  }
+
+  /// 把 MCP 的三项状态落盘。失败不抛——存不上只影响下次是否自启。
+  Future<void> _persist({required bool running}) async {
+    try {
+      await AppSettings.instance
+          .setMcpConfig(wasRunning: running, allowLan: allowLan, token: token);
     } catch (e) {
-      AppLog.instance.log('error', 'MCP 启动失败: $e');
-      _lastError = _describe(e);
-      _port = 0;
-      return 0;
+      AppLog.instance.log('warn', 'MCP 设置保存失败: $e');
+    }
+  }
+
+  /// 按上次会话的状态把服务拉起来。
+  ///
+  /// App 启动时调一次：用户上次开了 MCP（尤其是局域网模式），
+  /// 重启 App 后自动回到同一状态，电脑端配好的地址 + 口令不用重填。
+  /// 服务已在跑就不动。
+  Future<void> restoreFromSettings() async {
+    final s = AppSettings.instance;
+    if (!s.mcpWasRunning) return;
+    if (running) return;
+    allowLan = s.mcpAllowLan;
+    token = s.mcpToken;
+    if (allowLan && token.isEmpty) token = newToken();
+    final p = await start(allowLan: allowLan, token: token);
+    if (p > 0) {
+      AppLog.instance.log('info', '已恢复上次的 MCP 服务（端口 $p）');
     }
   }
 
@@ -165,6 +238,8 @@ class McpService {
       AppLog.instance.log('error', 'MCP 停止失败: $e');
     }
     _port = 0;
+    // 记成「没在跑」，但保留 allowLan / token，下次开启沿用同一口令。
+    await _persist(running: false);
     AppLog.instance.log('info', 'MCP 服务已停止');
   }
 }
