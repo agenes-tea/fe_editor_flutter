@@ -7,8 +7,9 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/text_find_replace.dart';
 import 'package:fe_editor/core/text_writer.dart';
 
-Directory get _romDir =>
-    Directory('${Platform.environment['HOME']}/workspace/game-rom');
+import 'rom_paths.dart';
+
+Directory get _romDir => Directory(romDir);
 
 File _romByKeyword(String keyword) {
   for (final f in _romDir.listSync()) {

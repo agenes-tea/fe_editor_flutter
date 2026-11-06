@@ -6,8 +6,10 @@ import 'package:fe_editor/core/fe_rom.dart';
 import 'package:fe_editor/core/tile_image.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'rom_paths.dart';
+
 /// 真实 ROM 路径：按「文件名关键字 + 大小」定位，避免在 Dart 源码里写中文文件名。
-Directory get _romDir => Directory('${Platform.environment['HOME']}/workspace/game-rom');
+Directory get _romDir => Directory(romDir);
 
 /// 按文件名关键字定位（多个 ROM 同尺寸时必须靠关键字区分版本）。
 File _romByKeyword(String keyword) {

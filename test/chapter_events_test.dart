@@ -8,7 +8,9 @@ import 'package:fe_editor/core/map_reader.dart';
 import 'package:fe_editor/core/unit_placement.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Directory get _romDir => Directory('${Platform.environment['HOME']}/workspace/game-rom');
+import 'rom_paths.dart';
+
+Directory get _romDir => Directory(romDir);
 
 EditableRom _open(String keyword) {
   final f = _romDir

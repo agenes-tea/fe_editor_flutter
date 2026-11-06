@@ -124,7 +124,12 @@ expanded ROMs are resolved correctly.
 flutter build apk --release --target-platform android-arm64
 ```
 
-Tests: `flutter test` (requires 13 real ROM samples).
+> The first repository line in `android/build.gradle` and `settings.gradle` is
+> `file:///root/local-maven` (a local offline mirror used only in the dev container).
+> When that path does not exist Gradle falls through to the mirrors, `google()` and
+> `mavenCentral()`, so a normal environment builds fine; delete the line to remove it.
+
+Tests: `flutter test` (requires real ROM samples of the three games).
 ROMs are copyrighted and not included; point the tests at your own copies with `FE_ROM_DIR`:
 
 ```bash
@@ -187,6 +192,10 @@ by an AI is otherwise only noticed by hand, the server adds a safety net:
 
 - Data and format knowledge derived from
   [FEBuilderGBA](https://github.com/FEBuilderGBA/FEBuilderGBA) (GPL-3.0, by 7743)
+- The community patch library under `assets/patches/` (`PATCH_*.txt` plus data blocks) is
+  **copied wholesale** from FEBuilderGBA. Individual authors are credited in each patch's
+  `AUTHOR=` field (including 7743, Hextator, Tequila, aera, laqieer, Brendor, Agro,
+  Leonarth, Kirb and HyperGammaSpaces; see the upstream repository for the full list)
 - The in-game debugger patch derives from
   [Vesly](https://github.com/Veslyquix/ASM)'s Nergal debugger (GPL-3.0)
 - This project's code is an independent Dart implementation, licensed GPL-3.0

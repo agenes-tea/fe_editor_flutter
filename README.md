@@ -100,7 +100,11 @@ ROM 识别靠结构匹配（不依赖 game code），扩展 ROM 的指针超过 
 flutter build apk --release --target-platform android-arm64
 ```
 
-测试：`flutter test`（需要 13 个真实 ROM 样本）。
+> `android/build.gradle` 与 `settings.gradle` 的第一行仓库是 `file:///root/local-maven`
+> （本地离线镜像，仅用于开发容器）。该路径不存时 Gradle 会继续尝试后面的镜像与
+> `google()` / `mavenCentral()`，正常环境可直接构建；若要彻底去掉，删掉那一行即可。
+
+测试：`flutter test`（需要三作原版与汉化版的真实 ROM 样本）。
 ROM 有版权、不进仓库，测试通过 `FE_ROM_DIR` 指定样本目录：
 
 ```bash
@@ -147,6 +151,9 @@ flutter test --dart-define=FE_ROM_DIR=/path/to/game-rom
 ## 致谢与许可
 
 - 数据与格式知识参考 [FEBuilderGBA](https://github.com/FEBuilderGBA/FEBuilderGBA)（GPL-3.0，7743 著）
+- `assets/patches/` 下的社区补丁库（`PATCH_*.txt` 与数据块）**整包复制**自 FEBuilderGBA，
+  作者在各补丁文件头的 `AUTHOR=` 字段里（含 7743、Hextator、Tequila、aera、laqieer、
+  Brendor、Agro、Leonarth、Kirb、HyperGammaSpaces 等，完整列表见原文件与上游仓库）
 - 游戏内调试器补丁源自 [Vesly](https://github.com/Veslyquix/ASM) 的 Nergal 调试器（GPL-3.0）
 - 本项目代码为 Dart 独立实现，GPL-3.0 许可
 - 源码仓库：[agenes-tea/fe_editor_flutter](https://github.com/agenes-tea/fe_editor_flutter)

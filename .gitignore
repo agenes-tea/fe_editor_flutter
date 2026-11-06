@@ -54,3 +54,13 @@ android/key.properties
 # 生成产物：gen_patch.py 会重新生成（真正的运行时资源在 assets/debugger/）
 /tool/debugger_patch/*.json
 __pycache__/
+
+# ROM 与导出产物：有版权或体积大，绝不进仓库
+*.gba
+*.agb
+*.sav
+*.apk
+*.aab
+*.ups
+*.ips
+!assets/patches/**/*.ips

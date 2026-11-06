@@ -10,7 +10,9 @@ import 'package:fe_editor/ui/item_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Directory get _romDir => Directory('${Platform.environment['HOME']}/workspace/game-rom');
+import 'rom_paths.dart';
+
+Directory get _romDir => Directory(romDir);
 
 File _romByKeyword(String keyword) {
   for (final f in _romDir.listSync()) {

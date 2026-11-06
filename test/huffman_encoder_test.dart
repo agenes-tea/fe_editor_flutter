@@ -7,8 +7,9 @@ import 'package:fe_editor/core/huffman_encoder.dart';
 import 'package:fe_editor/core/rom_buffer.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Directory get _romDir =>
-    Directory('${Platform.environment['HOME']}/workspace/game-rom');
+import 'rom_paths.dart';
+
+Directory get _romDir => Directory(romDir);
 
 Uint8List _load(String keyword) {
   for (final f in _romDir.listSync()) {
